@@ -110,7 +110,7 @@ fun insert_to_table :: "s_insert_query \<Rightarrow> s_table \<Rightarrow> s_tab
     True \<Rightarrow> Some (table \<lparr> vals := (iq # (vals table)) \<rparr>)
 )"
 
-value "insert (test_insert_query ()) (test_table ())"
+value "insert_to_table (test_insert_query ()) (test_table ())"
 
 fun select :: "s_query \<Rightarrow> s_database \<Rightarrow> s_query_result" where
 "select (SQ args from where groupby) (SD tables) = SQR_Error ''test2'' "
