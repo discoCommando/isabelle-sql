@@ -113,6 +113,6 @@ fun insert_to_table :: "s_insert_query \<Rightarrow> s_table \<Rightarrow> s_tab
 value "insert (test_insert_query ()) (test_table ())"
 
 fun select :: "s_query \<Rightarrow> s_database \<Rightarrow> s_query_result" where
-"select (SQ args from where groupby) (SD tables) = SQR_Error ''test'' "
+"select (SQ args from where groupby) (SD tables) = SQR_Error ''test2'' "
 
 end 
