@@ -137,10 +137,10 @@ record s_table_cell =
   s_table_cell_value :: s_value
 
 record s_join_result_cell = s_table_cell + 
-  s_join_result_cell_tbl_name :: s_tbl_name
+  s_join_result_cell_tbl_name :: "s_tbl_name"
 
 record s_join_result_schema_row = s_schema_row + 
-  s_join_result_schema_tbl_name :: s_tbl_name
+  s_join_result_schema_tbl_name :: "s_tbl_name"
 
 type_synonym s_join_result_vals =  "(s_join_result_cell list) list"
 
@@ -433,6 +433,19 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
     )
 )"
 
+fun cross_join_tables_helper :: "s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals" where 
+"cross_join_tables_helper [] _ = []" |
+"cross_join_tables_helper (l#ls) rs = 
+  map (\<lambda>r. l @ r) rs @ cross_join_tables_helper ls rs
+"
+
+fun cross_join_tables :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result" where
+"cross_join_tables l r = 
+  \<lparr> s_join_result_schema = s_join_result_schema l @ s_join_result_schema r
+  , s_join_result_vals = cross_join_tables_helper (s_join_result_vals l) (s_join_result_vals r)
+  \<rparr>
+"
+
 fun resolve_table_factor :: "s_table_factor \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" 
 and resolve_join_table :: "s_join_table \<Rightarrow> s_database \<Rightarrow> s_join_result option_err"
 and resolve_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
@@ -447,10 +460,7 @@ and resolve_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rig
         _ \<Rightarrow> (
           case resolve_table_factor (STF_Multiple xs) db of 
             Error x \<Rightarrow> Error x |
-            Ok res2 \<Rightarrow> Ok 
-              \<lparr> s_join_result_schema = s_join_result_schema res @ s_join_result_schema res2
-              , s_join_result_vals = s_join_result_vals res @ s_join_result_vals res2
-              \<rparr>
+            Ok res2 \<Rightarrow> Ok (cross_join_tables res res2)
         )
     )
 )" |
