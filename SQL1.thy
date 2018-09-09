@@ -2,7 +2,10 @@ theory SQL1
   imports Main "~~/src/HOL/Library/Finite_Map"
 begin
 
+fun pipe :: "'a \<Rightarrow> ('a \<Rightarrow> 'b) \<Rightarrow> 'b" where 
+"pipe a f = (f a)"
 
+notation pipe (infixl "|>" 80)
 
 datatype s_type 
   = ST_String 
@@ -22,8 +25,11 @@ fun s_value_eq :: "s_value \<Rightarrow> s_value \<Rightarrow> bool" where
 "s_value_eq (SV_Null) (SV_Null) = True" |
 "s_value_eq _ _ = False"
 
-datatype s_schema 
-  = SS_Schema "(s_rowname, s_type) fmap"
+record s_schema_row = 
+  s_schema_rowname :: s_rowname
+  s_schema_rowtype :: s_type
+
+type_synonym s_schema = "s_schema_row list"
 
 datatype s_tbl_name 
   = STN_String string
@@ -33,13 +39,9 @@ datatype s_select_argument
   | SSA_Tablerowname s_tbl_name s_rowname 
   | SSA_Star
 
-
 fun show_table_name :: "s_tbl_name \<Rightarrow> string" where 
   "show_table_name (STN_String s) = s"
 
-datatype s_lr_join_type 
-  = SLJT_Left
-  | SLJT_Right
 datatype 
   s_join_condition 
     = SJC_Using "s_rowname list"
@@ -50,7 +52,7 @@ datatype
 and
   s_join_table 
     = SJT_Join s_table_reference s_table_factor "s_join_condition list" (* for now it is inner join *) 
-    | SJT_LR_Join s_table_reference s_lr_join_type s_table_reference s_join_condition
+    | SJT_Left_Join s_table_reference s_table_reference s_join_condition
     | SJT_Nat_Join s_table_reference s_table_factor
 and 
   s_table_reference 
@@ -68,18 +70,20 @@ and get_tbl_names_from_tr :: "s_table_reference \<Rightarrow> s_tbl_name list" w
 "get_tbl_names_from_tr (SFA_Table_Factor tf) = get_tbl_names_from_tf tf" | 
 "get_tbl_names_from_tr (SFA_Join_Table (SJT_Join tr tf _)) = 
   get_tbl_names_from_tr tr @ get_tbl_names_from_tf tf" | 
-"get_tbl_names_from_tr (SFA_Join_Table (SJT_LR_Join tr1 _ tr2 _)) = 
+"get_tbl_names_from_tr (SFA_Join_Table (SJT_Left_Join tr1 tr2 _)) = 
   get_tbl_names_from_tr tr1 @ get_tbl_names_from_tr tr2" |
 "get_tbl_names_from_tr (SFA_Join_Table (SJT_Nat_Join tr tf)) = 
   get_tbl_names_from_tr tr @ get_tbl_names_from_tf tf"
-
-
 
 datatype s_where_argument = SWA_AND s_where_argument s_where_argument | SWA_ISNULL s_rowname | SWA_Empty
 
 datatype s_group_by = SGB_Empty
 
-datatype s_row = SS_Row "(s_select_argument, s_value) fmap"
+record s_row_cell =
+  s_row_select_argument :: s_select_argument
+  s_row_value :: s_value
+
+datatype s_row = SS_Row "s_row_cell list"
 
 datatype s_query_result = SQR_Success "s_row list" | SQR_Error string
 
@@ -87,42 +91,90 @@ datatype s_query = SQ "s_select_argument list" s_table_reference s_where_argumen
 
 datatype 'a option_err = Error string | Ok 'a 
 
-type_synonym vals =  "(((s_rowname, s_value) fmap) list)"
+fun map_oe :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
+"map_oe _ (Error x) = Error x" |
+"map_oe f (Ok x) = Ok (f x)"
 
-type_synonym s_join_result = "((s_tbl_name \<times> s_rowname \<times> s_value) list) list"
+(* notation map_oe (infixl "<$>" 80) *)
+
+fun and_map_oe :: "('a  \<Rightarrow> 'b) option_err \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
+"and_map_oe (Error x) _ = Error x" |
+"and_map_oe _ (Error x) = Error x" |
+"and_map_oe (Ok f) (Ok a) = Ok (f a)"
+
+(* notation and_map_oe (infixl "<*>" 80) *)
+
+fun and_then_oe :: "('a \<Rightarrow> 'b option_err) \<Rightarrow> 'a option_err  \<Rightarrow> 'b option_err" where 
+"and_then_oe _ (Error x) = Error x" |
+"and_then_oe f (Ok a) = f a"
+
+(*notation and_then_oe (infixl "\<bind>" 80)*)
+
+record s_table_cell =
+  s_table_cell_rowname :: s_rowname
+  s_table_cell_value :: s_value
+
+record s_join_result_cell = s_table_cell + 
+  s_join_result_cell_tbl_name :: s_tbl_name
+
+record s_join_result_schema_row = s_schema_row + 
+  s_join_result_schema_tbl_name :: s_tbl_name
+
+type_synonym s_join_result_vals =  "(s_join_result_cell list) list"
+
+record s_join_result = 
+  s_join_result_schema :: "s_join_result_schema_row list"
+  s_join_result_vals :: s_join_result_vals
 
 record s_table = 
-  tbl_name :: s_tbl_name
-  schema :: s_schema 
-  vals :: vals
+  s_table_tbl_name :: s_tbl_name
+  s_table_schema :: s_schema 
+  s_table_vals :: "(s_table_cell list) list"
 
 datatype s_insert_query = SIQ "(s_rowname, s_value) fmap"
 
-datatype s_database = SD "(s_tbl_name, s_table) fmap"
+datatype s_database = SD "s_table list"
 
 fun test_schema :: "unit \<Rightarrow> s_schema" where
-"test_schema _ = SS_Schema (
-  fmap_of_list 
-    [ (''id'', ST_Int)
-    , (''name'', ST_String)
-    ]
-)"
+"test_schema _ = SS_Schema 
+    [ \<lparr> s_schema_rowname = ''id'', s_schema_rowtype = ST_Int \<rparr>
+    , \<lparr> s_schema_rowname = ''name'', s_schema_rowtype = ST_String \<rparr>
+    ]"
 
 fun test_table :: "unit \<Rightarrow> s_table" where
 "test_table _ = 
-  \<lparr> table_name = STN_String ''test_table''
-  , schema = test_schema ()
-  , vals = []
+  \<lparr> s_table_tbl_name = STN_String ''test_table''
+  , s_table_schema = test_schema ()
+  , s_table_vals = [
+    [ \<lparr>s_table_cell_rowname = ''id'', s_table_cell_value = SV_Int 10\<rparr>
+    , \<lparr>s_table_cell_rowname = ''name'', s_table_cell_value = SV_String ''test''\<rparr>]
+  ]
   \<rparr>
 " 
+
+value "test_table () |> s_table_vals |> map ( map (\<lambda>x. s_table_cell.extend x (s_join_result_cell.fields (STN_String ''a'')) ))"
 
 fun test_db :: "unit \<Rightarrow> s_database" where 
 "test_db _ = SD (fmap_of_list [(STN_String ''test_table'', test_table ())])"
 
 value "SR_String ''a'' = SR_String ''b''"
-value "(case (test_schema ()) of 
-  SS_Schema x \<Rightarrow> fmdom x)"
+value "test_db ()"
 
+fun lookup_rowname :: "s_rowname \<Rightarrow> ('a \<Rightarrow> s_rowname) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
+"lookup_rowname rn getter [] = None" |
+"lookup_rowname rn getter (x#xs) = (
+  case (getter x = rn) of 
+    True \<Rightarrow> Some x |
+    False \<Rightarrow> lookup_rowname rn getter xs
+)"
+
+fun lookup_tbl_name :: "s_tbl_name \<Rightarrow> ('a \<Rightarrow> s_tbl_name) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
+"lookup_tbl_name rn getter [] = None" |
+"lookup_tbl_name rn getter (x#xs) = (
+  case (getter x = rn) of 
+    True \<Rightarrow> Some x |
+    False \<Rightarrow> lookup_tbl_name rn getter xs
+)"
 
 fun is_value_correct :: "s_value \<Rightarrow> s_type \<Rightarrow> bool" where
 "is_value_correct (SV_String _) (ST_String) = True" |
@@ -193,30 +245,34 @@ fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argume
 fun table_names_unique :: "s_tbl_name list \<Rightarrow> bool" where 
 "table_names_unique list = distinct (map show_table_name list)"
 
-fun find_in_row :: "s_rowname \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list  \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) option" where 
-"find_in_row rn [] = None" |
-"find_in_row rn1 ((tbl_nm, rn2, v)#xs) = (
-  case (rn1 = rn2) of 
-    True \<Rightarrow> Some (tbl_nm, rn2, v) |
-    False \<Rightarrow> find_in_row rn2 xs
+fun find_in_row :: "s_rowname \<Rightarrow> s_join_result_cell list  \<Rightarrow> s_join_result_cell list" where 
+"find_in_row rn [] = []" |
+"find_in_row rn (cell # rest) = (
+  case rn = s_table_cell_rowname cell of 
+    True \<Rightarrow> cell # find_in_row rn rest |
+    False \<Rightarrow> find_in_row rn rest
 )"
 
-fun inner_join_using :: "s_rowname list \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list \<Rightarrow> bool option_err" where
+fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_cell list \<Rightarrow> bool option_err" where
 "inner_join_using [] _ _ = Error ''Empty 'using' list ''" |
 "inner_join_using (x#xs) l r = (
   case (find_in_row x l, find_in_row x r) of 
-    (Some (tbl_nm1, rn1, v1), Some (tbl_nm2, rn2, v2)) \<Rightarrow> (
-      case s_value_eq v1 v2 of 
+    ([jrc1], [jrc2]) \<Rightarrow> (
+      case s_value_eq (s_table_cell_value jrc1) (s_table_cell_value jrc2) of 
         False \<Rightarrow> Ok False |
         True \<Rightarrow> (
           case xs of 
             [] \<Rightarrow> Ok True |
             _ \<Rightarrow> inner_join_using xs l r
         )
-    )
+    ) |
+    ([], _) \<Rightarrow> Error (''Cannot find column '' @ x @ '' in the left table of join'') |
+    (_, []) \<Rightarrow> Error (''Cannot find column '' @ x @ '' in the right table of join'') |
+    (a#b#rs, _) \<Rightarrow> Error (''More than one column '' @ x @ '' found in the left table of join'')|
+    (_, a#b#rs) \<Rightarrow> Error (''More than one column '' @ x @ '' found in the right table of join'')
 )"
 
-fun inner_join_try :: "s_join_condition list \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list \<Rightarrow> bool option_err" where 
+fun inner_join_try :: "s_join_condition list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_cell list \<Rightarrow> bool option_err" where 
 "inner_join_try [] _ _ = Error ''Empty join condition list''" |
 "inner_join_try ((SJC_Using rnl)#xs) l r = (
   case inner_join_using rnl l r of 
@@ -229,7 +285,7 @@ fun inner_join_try :: "s_join_condition list \<Rightarrow> (s_tbl_name \<times> 
     )
 )"
 
-fun inner_join_single_row :: "s_join_condition list \<Rightarrow> (s_tbl_name \<times> s_rowname \<times> s_value) list \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where 
+fun inner_join_single_row :: "s_join_condition list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
 "inner_join_single_row conds left_row [] = Ok []" |
 "inner_join_single_row conds left_row (r#rs) = (
   case inner_join_try conds left_row r of 
@@ -245,50 +301,113 @@ fun inner_join_single_row :: "s_join_condition list \<Rightarrow> (s_tbl_name \<
     )
 )"
 
-fun inner_join :: "s_join_condition list \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
-"inner_join conds [] _ = Ok []" | 
-"inner_join conds (l#ls) rs = (
+fun inner_join_helper :: "s_join_condition list \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
+"inner_join_helper _ [] _ = Ok []" |
+"inner_join_helper conds (l#ls) rs = (
   case inner_join_single_row conds l rs of 
     Error x \<Rightarrow> Error x |
     Ok join_res \<Rightarrow> (
-      case inner_join conds ls rs of 
+      case inner_join_helper conds ls rs of 
         Error x \<Rightarrow> Error x |
         Ok join_res2 \<Rightarrow> Ok (join_res @ join_res2)
     )
 )"
 
+fun add_tbl_name_to_schema :: "s_tbl_name \<Rightarrow> s_schema_row \<Rightarrow> s_join_result_schema_row" where 
+"add_tbl_name_to_schema tbl_name schema_row = 
+  \<lparr> s_schema_rowname = s_schema_rowname schema_row
+  , s_schema_rowtype = s_schema_rowtype schema_row
+  , s_join_result_schema_tbl_name = tbl_name
+  \<rparr>
+"
 
-definition set_to_list :: "'a set \<Rightarrow> 'a list"
-  where "set_to_list s = (SOME l. set l = s)"
+fun inner_join :: "s_join_condition list \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
+"inner_join conds l r = (
+  let inner_join_vals = inner_join_helper conds (s_join_result_vals l) (s_join_result_vals r) in
+  inner_join_vals 
+    |> map_oe (
+      \<lambda>vals. 
+        \<lparr> s_join_result_schema = append
+            (s_join_result_schema l) 
+            (s_join_result_schema r)
+        , s_join_result_vals = vals
+        \<rparr>
+      )
+)"
 
-lemma  set_set_to_list:
-   "finite s \<Longrightarrow> set (set_to_list s) = s"
-unfolding set_to_list_def by (metis (mono_tags) finite_list some_eq_ex)
+fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_result_cell list" where 
+"make_empty_row [] = []" |
+"make_empty_row (schema_row#rest) = (
+  let cell = 
+    \<lparr> s_table_cell_rowname = s_schema_rowname schema_row
+    , s_table_cell_value = SV_Null
+    , s_join_result_cell_tbl_name = s_join_result_schema_tbl_name schema_row
+    \<rparr>
+  in
+  cell # make_empty_row rest
+)"
 
+fun left_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result \<Rightarrow> s_join_result_vals option_err" where 
+"left_join_helper _ [] _ = Ok [] " |
+"left_join_helper cond (l#ls) rs = (
+  inner_join_single_row [cond] l (s_join_result_vals rs) 
+  |> map_oe (\<lambda>single_row_result. (
+    case single_row_result of 
+      (x#xs) \<Rightarrow> single_row_result |
+      [] \<Rightarrow> [l @ make_empty_row (s_join_result_schema rs)]
+  ))
+)"
 
-fun list_of_fmap :: "('a, 'b) fmap \<Rightarrow> ('a \<times> 'b) list" where
-"list_of_fmap x = set_to_list (fset_of_fmap x)"
+fun left_join :: "s_join_condition \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
+"left_join cond l r = (
+  let left_join_vals = left_join_helper cond (s_join_result_vals l) r in
+  left_join_vals 
+    |> map_oe (
+      \<lambda>vals. 
+        \<lparr> s_join_result_schema = append
+            (s_join_result_schema l) 
+            (s_join_result_schema r)
+        , s_join_result_vals = vals
+        \<rparr>
+      )
+)"
 
+fun find_same_rownames :: "s_join_result_schema_row list \<Rightarrow> s_join_result_schema_row list \<Rightarrow> (s_rowname list) option_err" where 
+"find_same_rownames [] _ = Ok []" |
+"find_same_rownames (l#ls) rs = (
+  case find ((op = (s_schema_rowname l)) \<circ> s_schema_rowname) ls of 
+    Some _ \<Rightarrow> Error (''Column '' @ s_schema_rowname l @ '' occurs more than once in the left table of join'') |
+    None \<Rightarrow> (
+      case filter ((op = (s_schema_rowname l)) \<circ> s_schema_rowname) rs of 
+        [] \<Rightarrow> find_same_rownames ls rs |
+        [r] \<Rightarrow> find_same_rownames ls rs |> map_oe (op # (s_schema_rowname l)) |
+        (a # b # rest) \<Rightarrow> Error (''Column '' @ s_schema_rowname l @ '' occurs more than once in the right table of join'')
+    )
+)"
 
-value "fset_of_fmap (fmap_of_list 
-    [ (''id'', ST_Int)
-    , (''name'', ST_String)
-    ])"
+fun natural_join :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where 
+"natural_join l r = 
+  find_same_rownames (s_join_result_schema l) (s_join_result_schema r)
+  |> and_then_oe (\<lambda>same_rownames. inner_join [SJC_Using same_rownames] l r)
+" (* definition of natural join in https://dev.mysql.com/doc/refman/8.0/en/join.html *)
 
 fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
 "resolve_single_table tbl_nm (SD tables) = (
-  case fmlookup tables tbl_nm of
+  case lookup_tbl_name tbl_nm s_table_tbl_name tables of
     None \<Rightarrow> Error (''Unknown table '' @ (show_table_name tbl_nm) @ '' in database '') |
     Some table \<Rightarrow> ( 
       let 
-        result = map (\<lambda>vs. (
-          let
-            ls = fset_of_fmap vs 
-          in
-          map (\<lambda>(a,b). (tbl_name table, a, b)) (sorted_list_of_set ls)
-          )) (vals table)
+        result = s_table_vals table 
+          |> map (map (\<lambda>tc. \<lparr> 
+              s_table_cell_rowname = s_table_cell_rowname tc,
+              s_table_cell_value = s_table_cell_value tc,
+              s_join_result_cell_tbl_name = tbl_nm
+            \<rparr>))
       in
-      Ok result
+      Ok 
+        \<lparr> s_join_result_schema = s_table_schema table |> map (add_tbl_name_to_schema (s_table_tbl_name table))
+        , s_join_result_vals = result 
+        \<rparr>
     )
 )"
 
@@ -306,12 +425,30 @@ and resolve_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rig
         _ \<Rightarrow> (
           case resolve_table_factor (STF_Multiple xs) db of 
             Error x \<Rightarrow> Error x |
-            Ok res2 \<Rightarrow> Ok (res @ res2)
+            Ok res2 \<Rightarrow> Ok 
+              \<lparr> s_join_result_schema = s_join_result_schema res @ s_join_result_schema res2
+              , s_join_result_vals = s_join_result_vals res @ s_join_result_vals res2
+              \<rparr>
         )
     )
 )" |
 
-"resolve_join_table (SJT tr tf )" |
+"resolve_join_table (SJT_Join tr tf conds) db = 
+  resolve_table_reference tr db
+  |> and_then_oe (\<lambda>jr1. resolve_table_factor tf db
+  |> and_then_oe (\<lambda>jr2. inner_join conds jr1 jr2
+  ))" |
+"resolve_join_table (SJT_Left_Join tr1 tr2 cond) db = 
+  resolve_table_reference tr1 db
+  |> and_then_oe (\<lambda>jr1. resolve_table_reference tr2 db
+  |> and_then_oe (\<lambda>jr2. left_join cond jr1 jr2
+  ))" |
+"resolve_join_table (SJT_Nat_Join tr tf) db = 
+  resolve_table_reference tr db
+  |> and_then_oe (\<lambda>jr1. resolve_table_factor tf db
+  |> and_then_oe (\<lambda>jr2. natural_join jr1 jr2
+  ))" |
+
 "resolve_table_reference (SFA_Table_Factor table_factor) db = resolve_table_factor table_factor db" |
 "resolve_table_reference (SFA_Join_Table join) db = resolve_join_table join db"
 
