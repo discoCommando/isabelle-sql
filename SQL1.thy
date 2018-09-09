@@ -39,6 +39,28 @@ datatype s_select_argument
   | SSA_Tablerowname s_tbl_name s_rowname 
   | SSA_Star
 
+datatype s_identifier
+  = SI_Simple s_rowname
+  | SI_With_Tbl_Name s_tbl_name s_rowname
+
+datatype s_simple_expr 
+  = SSE_Literal s_value (* this is a simplification *)
+  | SSE_Identifier s_identifier
+datatype s_bit_expr
+  = SBE_Add s_bit_expr s_bit_expr
+  | SBE_Mult s_bit_expr s_bit_expr
+  | SBE_Simple_Expr s_simple_expr
+datatype s_predicate 
+  = SP_Bit_Expr s_bit_expr
+datatype s_boolean_primary 
+  = SBP_Is_Null s_boolean_primary
+  | SBP_Predicate s_predicate
+datatype s_expr
+  = SE_Or s_expr s_expr
+  | SE_And s_expr s_expr
+  | SE_Not s_expr 
+  | SE_Boolean_Primary s_boolean_primary
+
 fun show_table_name :: "s_tbl_name \<Rightarrow> string" where 
   "show_table_name (STN_String s) = s"
 
