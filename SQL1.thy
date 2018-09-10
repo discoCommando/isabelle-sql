@@ -601,6 +601,50 @@ fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> s_join_row \<R
   |> map_oe SBPR_Value
 "
 
+fun interpret_expr :: "s_expr \<Rightarrow> s_join_row \<Rightarrow> bool option_err" where 
+"interpret_expr (SE_Or e1 e2) jr = 
+  interpret_expr e1 jr 
+  |> and_then_oe (\<lambda>r1. interpret_expr e2 jr
+  |> and_then_oe (\<lambda>r2. Ok (r1 \<or> r2)))" |
+"interpret_expr (SE_And e1 e2) jr = 
+  interpret_expr e1 jr 
+  |> and_then_oe (\<lambda>r1. interpret_expr e2 jr
+  |> and_then_oe (\<lambda>r2. Ok (r1 \<and> r2)))" |
+"interpret_expr (SE_Not e) jr = 
+  interpret_expr e jr 
+  |> and_then_oe (\<lambda>r. Ok (\<not>r))" |
+"interpret_expr (SE_Boolean_Primary bp) jr = 
+  interpret_boolean_primary bp jr
+  |> map_oe (\<lambda>r. (
+    case r of 
+      SBPR_Bool b \<Rightarrow> b |
+      SBPR_Value (SV_Int i) \<Rightarrow> (i = 1) | 
+      _ \<Rightarrow> False
+  ))
+"
+
+fun interpret_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow> (s_join_row list) option_err" where 
+"interpret_where_helper e [] = Ok []" |
+"interpret_where_helper e (jr # jrs) = 
+  interpret_expr e jr 
+  |> and_then_oe (\<lambda>jr_res. interpret_where_helper e jrs
+  |> and_then_oe (\<lambda>jrs_res.
+    case jr_res of
+      True \<Rightarrow> Ok (jr # jrs_res) |
+      False \<Rightarrow> Ok jrs_res
+  ))
+"
+
+
+fun interpret_where :: "s_expr \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
+"interpret_where e jres = 
+  jres
+    |> s_join_result_vals
+    |> interpret_where_helper e
+    |> map_oe (\<lambda>vals. jres\<lparr> s_join_result_vals := vals \<rparr>)
+"
+
+
 (*fun get_values_for_select_arguments :: "s_select_argument list \<Rightarrow> ((s_rowname, s_value) fmap) list \<Rightarrow> " *)
 
 (*fun select_from_single_table :: "s_query \<Rightarrow> s_table \<Rightarrow> s_query_result" where
