@@ -73,7 +73,7 @@ datatype
     | STF_Multiple "s_table_reference list"
 and
   s_join_table 
-    = SJT_Join s_table_reference s_table_factor "s_join_condition list" (* for now it is inner join *) 
+    = SJT_Join s_table_reference s_table_factor "s_join_condition option" (* for now it is inner join *) 
     | SJT_Left_Join s_table_reference s_table_reference s_join_condition
     | SJT_Nat_Join s_table_reference s_table_factor
 and 
@@ -137,12 +137,14 @@ record s_table_cell =
   s_table_cell_value :: s_value
 
 record s_join_result_cell = s_table_cell + 
-  s_join_result_cell_tbl_name :: "s_tbl_name"
+  s_join_result_cell_tbl_name :: "s_tbl_name list"
 
 record s_join_result_schema_row = s_schema_row + 
-  s_join_result_schema_tbl_name :: "s_tbl_name"
+  s_join_result_schema_tbl_name :: "s_tbl_name list"
 
-type_synonym s_join_result_vals =  "(s_join_result_cell list) list"
+type_synonym s_join_row = "s_join_result_cell list"
+
+type_synonym s_join_result_vals =  "s_join_row list"
 
 record s_join_result = 
   s_join_result_schema :: "s_join_result_schema_row list"
@@ -267,7 +269,7 @@ fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argume
 fun table_names_unique :: "s_tbl_name list \<Rightarrow> bool" where 
 "table_names_unique list = distinct (map show_table_name list)"
 
-fun find_in_row :: "s_rowname \<Rightarrow> s_join_result_cell list  \<Rightarrow> s_join_result_cell list" where 
+fun find_in_row :: "s_rowname \<Rightarrow> s_join_row  \<Rightarrow> s_join_row" where 
 "find_in_row rn [] = []" |
 "find_in_row rn (cell # rest) = (
   case rn = s_table_cell_rowname cell of 
@@ -275,18 +277,32 @@ fun find_in_row :: "s_rowname \<Rightarrow> s_join_result_cell list  \<Rightarro
     False \<Rightarrow> find_in_row rn rest
 )"
 
-fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_cell list \<Rightarrow> bool option_err" where
-"inner_join_using [] _ _ = Error ''Empty 'using' list ''" |
+fun remove_from_row :: "s_rowname list \<Rightarrow> s_join_row \<Rightarrow> s_join_row" where 
+"remove_from_row [] x = x" |
+"remove_from_row (r # rs) x = filter (op \<noteq> r \<circ> s_table_cell_rowname) (remove_from_row rs x)"
+
+fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_row \<Rightarrow> s_join_row \<Rightarrow> ((s_join_result_cell list) option) option_err" where
+"inner_join_using [] _ _ = Error ''Empty 'using' list''" |
 "inner_join_using (x#xs) l r = (
   case (find_in_row x l, find_in_row x r) of 
     ([jrc1], [jrc2]) \<Rightarrow> (
       case s_value_eq (s_table_cell_value jrc1) (s_table_cell_value jrc2) of 
-        False \<Rightarrow> Ok False |
+        False \<Rightarrow> Ok None |
         True \<Rightarrow> (
+          let merged_cell = 
+            \<lparr> s_table_cell_rowname = x
+            , s_table_cell_value = s_table_cell_value jrc1
+            , s_join_result_cell_tbl_name = s_join_result_cell_tbl_name jrc1 @ s_join_result_cell_tbl_name jrc2
+            \<rparr>
+          in (
           case xs of 
-            [] \<Rightarrow> Ok True |
-            _ \<Rightarrow> inner_join_using xs l r
-        )
+            [] \<Rightarrow> Ok (Some [merged_cell]) |
+            _ \<Rightarrow> inner_join_using xs l r 
+              |> map_oe (\<lambda>rest. (case rest of 
+                Some merged_cells \<Rightarrow> Some (merged_cell # merged_cells) |
+                None \<Rightarrow> None
+              ))
+        ))
     ) |
     ([], _) \<Rightarrow> Error (''Cannot find column '' @ x @ '' in the left table of join'') |
     (_, []) \<Rightarrow> Error (''Cannot find column '' @ x @ '' in the right table of join'') |
@@ -294,36 +310,32 @@ fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_result_cell list \<
     (_, a#b#rs) \<Rightarrow> Error (''More than one column '' @ x @ '' found in the right table of join'')
 )"
 
-fun inner_join_try :: "s_join_condition list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_cell list \<Rightarrow> bool option_err" where 
-"inner_join_try [] _ _ = Error ''Empty join condition list''" |
-"inner_join_try ((SJC_Using rnl)#xs) l r = (
+fun inner_join_try :: "s_join_condition \<Rightarrow> s_join_row \<Rightarrow> s_join_row \<Rightarrow> ((s_join_row) option) option_err" where 
+"inner_join_try (SJC_Using rnl) l r = (
   case inner_join_using rnl l r of 
     Error x \<Rightarrow> Error x |
-    Ok False \<Rightarrow> Ok False |
-    Ok True \<Rightarrow> (
-      case xs of 
-        [] \<Rightarrow> Ok True |
-        _ \<Rightarrow> inner_join_try xs l r
-    )
+    Ok None \<Rightarrow> Ok None |
+    Ok (Some merged_cells) \<Rightarrow> Ok (Some (merged_cells @ remove_from_row rnl (l @ r)))
 )"
 
-fun inner_join_single_row :: "s_join_condition list \<Rightarrow> s_join_result_cell list \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
-"inner_join_single_row conds left_row [] = Ok []" |
-"inner_join_single_row conds left_row (r#rs) = (
-  case inner_join_try conds left_row r of 
+
+fun inner_join_single_row :: "s_join_condition  \<Rightarrow> s_join_row \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
+"inner_join_single_row cond left_row [] = Ok []" |
+"inner_join_single_row cond left_row (r#rs) = (
+  case inner_join_try cond left_row r of 
     Error x \<Rightarrow> Error x |
     Ok can_join \<Rightarrow> (
-      case inner_join_single_row conds left_row rs of 
+      case inner_join_single_row cond left_row rs of 
         Error x \<Rightarrow> Error x |
         Ok join_res \<Rightarrow> (
           case can_join of 
-            True \<Rightarrow> Ok ((left_row @ r) # join_res) |
-            False \<Rightarrow> Ok join_res
+            Some new_row \<Rightarrow> Ok (new_row # join_res) |
+            None \<Rightarrow> Ok join_res
         )
     )
 )"
 
-fun inner_join_helper :: "s_join_condition list \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
+fun inner_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
 "inner_join_helper _ [] _ = Ok []" |
 "inner_join_helper conds (l#ls) rs = (
   case inner_join_single_row conds l rs of 
@@ -339,25 +351,42 @@ fun add_tbl_name_to_schema :: "s_tbl_name \<Rightarrow> s_schema_row \<Rightarro
 "add_tbl_name_to_schema tbl_name schema_row = 
   \<lparr> s_schema_rowname = s_schema_rowname schema_row
   , s_schema_rowtype = s_schema_rowtype schema_row
-  , s_join_result_schema_tbl_name = tbl_name
+  , s_join_result_schema_tbl_name = [tbl_name]
   \<rparr>
 "
 
-fun inner_join :: "s_join_condition list \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
-"inner_join conds l r = (
-  let inner_join_vals = inner_join_helper conds (s_join_result_vals l) (s_join_result_vals r) in
-  inner_join_vals 
-    |> map_oe (
-      \<lambda>vals. 
-        \<lparr> s_join_result_schema = append
-            (s_join_result_schema l) 
-            (s_join_result_schema r)
-        , s_join_result_vals = vals
-        \<rparr>
-      )
+fun cross_join_tables_helper :: "s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals" where
+"cross_join_tables_helper [] _ = []" |
+"cross_join_tables_helper (l#ls) rs = 
+  map (\<lambda>r. l @ r) rs @ cross_join_tables_helper ls rs
+"
+
+fun cross_join_tables :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result" where
+"cross_join_tables l r = 
+  \<lparr> s_join_result_schema = s_join_result_schema l @ s_join_result_schema r
+  , s_join_result_vals = cross_join_tables_helper (s_join_result_vals l) (s_join_result_vals r)
+  \<rparr>
+"
+
+fun inner_join :: "s_join_condition option \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
+"inner_join o_cond l r = (
+  case o_cond of 
+    None \<Rightarrow> Ok (cross_join_tables l r) |
+    Some cond \<Rightarrow> (
+      let inner_join_vals = inner_join_helper cond (s_join_result_vals l) (s_join_result_vals r) in
+      inner_join_vals 
+        |> map_oe (
+          \<lambda>vals. 
+            \<lparr> s_join_result_schema = append
+                (s_join_result_schema l) 
+                (s_join_result_schema r)
+            , s_join_result_vals = vals
+            \<rparr>
+          )
+    )
 )"
 
-fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_result_cell list" where 
+fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_row" where 
 "make_empty_row [] = []" |
 "make_empty_row (schema_row#rest) = (
   let cell = 
@@ -372,7 +401,7 @@ fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_result
 fun left_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result \<Rightarrow> s_join_result_vals option_err" where 
 "left_join_helper _ [] _ = Ok [] " |
 "left_join_helper cond (l#ls) rs = (
-  inner_join_single_row [cond] l (s_join_result_vals rs) 
+  inner_join_single_row cond l (s_join_result_vals rs) 
   |> map_oe (\<lambda>single_row_result. (
     case single_row_result of 
       (x#xs) \<Rightarrow> single_row_result |
@@ -410,7 +439,7 @@ fun find_same_rownames :: "s_join_result_schema_row list \<Rightarrow> s_join_re
 fun natural_join :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where 
 "natural_join l r = 
   find_same_rownames (s_join_result_schema l) (s_join_result_schema r)
-  |> and_then_oe (\<lambda>same_rownames. inner_join [SJC_Using same_rownames] l r)
+  |> and_then_oe (\<lambda>same_rownames. inner_join (Some (SJC_Using same_rownames)) l r)
 " (* definition of natural join in https://dev.mysql.com/doc/refman/8.0/en/join.html *)
 
 fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
@@ -423,7 +452,7 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
           |> map (map (\<lambda>tc. \<lparr> 
               s_table_cell_rowname = s_table_cell_rowname tc,
               s_table_cell_value = s_table_cell_value tc,
-              s_join_result_cell_tbl_name = tbl_nm
+              s_join_result_cell_tbl_name = [tbl_nm]
             \<rparr>))
       in
       Ok 
@@ -433,18 +462,7 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
     )
 )"
 
-fun cross_join_tables_helper :: "s_join_result_vals \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals" where 
-"cross_join_tables_helper [] _ = []" |
-"cross_join_tables_helper (l#ls) rs = 
-  map (\<lambda>r. l @ r) rs @ cross_join_tables_helper ls rs
-"
 
-fun cross_join_tables :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result" where
-"cross_join_tables l r = 
-  \<lparr> s_join_result_schema = s_join_result_schema l @ s_join_result_schema r
-  , s_join_result_vals = cross_join_tables_helper (s_join_result_vals l) (s_join_result_vals r)
-  \<rparr>
-"
 
 fun resolve_table_factor :: "s_table_factor \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" 
 and resolve_join_table :: "s_join_table \<Rightarrow> s_database \<Rightarrow> s_join_result option_err"
