@@ -19,6 +19,22 @@ datatype s_value
   | SV_Int int 
   | SV_Null
 
+fun string_of_nat :: "nat \<Rightarrow> string"
+where
+  "string_of_nat n = (if n < 10 then [char_of_nat (48 + n)] else 
+     string_of_nat (n div 10) @ [char_of_nat (48 + (n mod 10))])"
+
+definition string_of_int :: "int \<Rightarrow> string"
+where
+  "string_of_int i = (if i < 0 then ''-'' @ string_of_nat (nat (- i)) else 
+     string_of_nat (nat i))"
+
+
+fun show_s_value :: "s_value \<Rightarrow> string" where 
+"show_s_value (SV_String s) = ''\"'' @ s @ ''\"'' " |
+"show_s_value (SV_Int i) = string_of_int i" |
+"show_s_value SV_Null = ''NULL''"
+
 fun s_value_eq :: "s_value \<Rightarrow> s_value \<Rightarrow> bool" where
 "s_value_eq (SV_String s1) (SV_String s2) = (s1 = s2)" |
 "s_value_eq (SV_Int i1) (SV_Int i2) = (i1 = i2)" |
@@ -31,8 +47,7 @@ record s_schema_row =
 
 type_synonym s_schema = "s_schema_row list"
 
-datatype s_tbl_name 
-  = STN_String string
+type_synonym s_tbl_name = string
 
 datatype s_select_argument 
   = SSA_Rowname s_rowname 
@@ -52,8 +67,12 @@ datatype s_bit_expr
   | SBE_Simple_Expr s_simple_expr
 datatype s_predicate 
   = SP_Bit_Expr s_bit_expr
+datatype s_comparison_operator
+  = SCO_Equal
+  | SCO_Less
 datatype s_boolean_primary 
   = SBP_Is_Null s_boolean_primary
+  | SBP_Comparison s_boolean_primary s_comparison_operator s_predicate
   | SBP_Predicate s_predicate
 datatype s_expr
   = SE_Or s_expr s_expr
@@ -269,7 +288,7 @@ fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argume
 fun table_names_unique :: "s_tbl_name list \<Rightarrow> bool" where 
 "table_names_unique list = distinct (map show_table_name list)"
 
-fun find_in_row :: "s_rowname \<Rightarrow> s_join_row  \<Rightarrow> s_join_row" where 
+fun find_in_row :: "s_rowname \<Rightarrow> s_join_row  \<Rightarrow> s_join_result_cell list" where 
 "find_in_row rn [] = []" |
 "find_in_row rn (cell # rest) = (
   case rn = s_table_cell_rowname cell of 
@@ -445,7 +464,7 @@ fun natural_join :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_j
 fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
 "resolve_single_table tbl_nm (SD tables) = (
   case lookup_tbl_name tbl_nm s_table_tbl_name tables of
-    None \<Rightarrow> Error (''Unknown table '' @ (show_table_name tbl_nm) @ '' in database '') |
+    None \<Rightarrow> Error (''Unknown table '' @ tbl_nm @ '' in database '') |
     Some table \<Rightarrow> ( 
       let 
         result = s_table_vals table 
@@ -461,7 +480,6 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
         \<rparr>
     )
 )"
-
 
 
 fun resolve_table_factor :: "s_table_factor \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" 
@@ -501,6 +519,87 @@ and resolve_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rig
 
 "resolve_table_reference (SFA_Table_Factor table_factor) db = resolve_table_factor table_factor db" |
 "resolve_table_reference (SFA_Join_Table join) db = resolve_join_table join db"
+
+
+fun interpret_identifier :: "s_identifier \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where 
+"interpret_identifier (SI_Simple rn) jr = (
+  case find_in_row rn jr of 
+    [] \<Rightarrow> Error (''Unknown column '' @ rn @ '' in where clause'') |
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ rn @ '' in where clause is ambiguous'') | 
+    [cell] \<Rightarrow> Ok (s_table_cell_value cell) 
+)" |
+"interpret_identifier (SI_With_Tbl_Name tbl_nm rn) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ rn @ '' in where clause'') " |
+"interpret_identifier (SI_With_Tbl_Name tbl_nm rn) (cell # rest) = (
+  case (s_table_cell_rowname cell = rn, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
+    _ \<Rightarrow> interpret_identifier (SI_With_Tbl_Name tbl_nm rn) rest
+)"
+
+fun interpret_simple_expr :: "s_simple_expr \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where 
+"interpret_simple_expr (SSE_Literal s_value) _ = Ok s_value" |
+"interpret_simple_expr (SSE_Identifier i) jr = interpret_identifier i jr"
+
+fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where
+"interpret_bit_expr (SBE_Add e1 e2) jr = (
+  case (interpret_bit_expr e1 jr, interpret_bit_expr e2 jr) of
+    (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 + i2)) |
+    (Error x, _) \<Rightarrow> Error x |
+    (_, Error x) \<Rightarrow> Error x |
+    (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for addition: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
+)" |
+"interpret_bit_expr (SBE_Mult e1 e2) jr = (
+  case (interpret_bit_expr e1 jr, interpret_bit_expr e2 jr) of
+    (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 * i2)) |
+    (Error x, _) \<Rightarrow> Error x |
+    (_, Error x) \<Rightarrow> Error x |
+    (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for multiplication: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
+)" | 
+"interpret_bit_expr (SBE_Simple_Expr e) jr = interpret_simple_expr e jr"
+
+fun interpret_predicate :: "s_predicate \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where 
+"interpret_predicate (SP_Bit_Expr e) jr = interpret_bit_expr e jr"
+
+datatype s_boolean_primary_result
+  = SBPR_Bool bool
+  | SBPR_Value s_value
+
+fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> s_join_row \<Rightarrow> s_boolean_primary_result option_err" where
+"interpret_boolean_primary (SBP_Is_Null bp) jr = (
+  interpret_boolean_primary bp jr 
+  |> and_then_oe (\<lambda>res. case res of 
+    SBPR_Value SV_Null \<Rightarrow> Ok (SBPR_Bool True) |
+    _ \<Rightarrow> Ok (SBPR_Bool False)
+  )
+)" |
+"interpret_boolean_primary (SBP_Comparison bp SCO_Equal pred) jr = 
+  interpret_boolean_primary bp jr 
+  |> and_then_oe (\<lambda>l. interpret_predicate pred jr
+  |> and_then_oe (\<lambda>r. ( 
+    case l of 
+      SBPR_Bool False \<Rightarrow> Ok (SBPR_Bool (s_value_eq (SV_Int 0) r)) | (* Booleans are 0 and 1 in mysql *)
+      SBPR_Bool True \<Rightarrow> Ok (SBPR_Bool (s_value_eq (SV_Int 1) r)) | (* https://dev.mysql.com/doc/refman/8.0/en/boolean-literals.html *)
+      SBPR_Value lv \<Rightarrow> Ok (SBPR_Bool (s_value_eq lv r))
+  )
+  ))
+" |
+"interpret_boolean_primary (SBP_Comparison bp SCO_Less pred) jr = 
+  interpret_boolean_primary bp jr 
+  |> and_then_oe (\<lambda>l. interpret_predicate pred jr
+  |> and_then_oe (\<lambda>r. ( 
+    case l of 
+      SBPR_Bool _ \<Rightarrow> Ok (SBPR_Bool False) |
+      SBPR_Value lv \<Rightarrow> (
+        case (lv, r) of 
+          (SV_Int il, SV_Int ir) \<Rightarrow> Ok (SBPR_Bool (il < ir)) |
+          (_,_) \<Rightarrow> Error (''Not comparable values in the where clause'')
+      )
+  )
+  ))
+" |
+"interpret_boolean_primary (SBP_Predicate pred) jr = 
+  interpret_predicate pred jr 
+  |> map_oe SBPR_Value
+"
 
 (*fun get_values_for_select_arguments :: "s_select_argument list \<Rightarrow> ((s_rowname, s_value) fmap) list \<Rightarrow> " *)
 
