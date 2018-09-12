@@ -12,7 +12,7 @@ datatype s_type
   | ST_Int 
   | ST_Date
 
-type_synonym s_rowname = string
+type_synonym s_column_name = string
 
 datatype s_value 
   = SV_String string 
@@ -42,21 +42,21 @@ fun s_value_eq :: "s_value \<Rightarrow> s_value \<Rightarrow> bool" where
 "s_value_eq _ _ = False"
 
 record s_schema_row = 
-  s_schema_rowname :: s_rowname
-  s_schema_rowtype :: s_type
+  s_schema_column_name :: s_column_name
+  s_schema_column_type :: s_type
 
 type_synonym s_schema = "s_schema_row list"
 
 type_synonym s_tbl_name = string
 
 datatype s_select_argument 
-  = SSA_Rowname s_rowname 
-  | SSA_Tablerowname s_tbl_name s_rowname 
+  = SSA_Rowname s_column_name 
+  | SSA_Tablecolumn_name s_tbl_name s_column_name 
   | SSA_Star
 
 datatype s_identifier
-  = SI_Simple s_rowname
-  | SI_With_Tbl_Name s_tbl_name s_rowname
+  = SI_Simple s_column_name
+  | SI_With_Tbl_Name s_tbl_name s_column_name
 
 datatype s_simple_expr 
   = SSE_Literal s_value (* this is a simplification *)
@@ -85,7 +85,7 @@ fun show_table_name :: "s_tbl_name \<Rightarrow> string" where
 
 datatype 
   s_join_condition 
-    = SJC_Using "s_rowname list"
+    = SJC_Using "s_column_name list"
 datatype 
   s_table_factor 
     = STF_Single s_tbl_name 
@@ -100,6 +100,18 @@ and
     = SFA_Table_Factor s_table_factor 
     | SFA_Join_Table s_join_table 
 
+datatype s_aggregating_expr
+  = SAE_Max s_expr
+  | SAE_Sum s_expr
+  | SAE_Count s_expr
+
+datatype s_select_expr_unnamed
+  = SSEU_Expr s_expr
+  | SSEU_Aggregating s_aggregating_expr
+datatype s_select_expr 
+  = SSE_Unnamed s_select_expr_unnamed
+  | SSE_Alias s_column_name s_select_expr_unnamed
+  | SSE_Star "s_tbl_name option"
 
 fun get_tbl_names_from_tf :: "s_table_factor \<Rightarrow> s_tbl_name list"
 and get_tbl_names_from_tr :: "s_table_reference \<Rightarrow> s_tbl_name list" where 
@@ -116,7 +128,7 @@ and get_tbl_names_from_tr :: "s_table_reference \<Rightarrow> s_tbl_name list" w
 "get_tbl_names_from_tr (SFA_Join_Table (SJT_Nat_Join tr tf)) = 
   get_tbl_names_from_tr tr @ get_tbl_names_from_tf tf"
 
-datatype s_where_argument = SWA_AND s_where_argument s_where_argument | SWA_ISNULL s_rowname | SWA_Empty
+datatype s_where_argument = SWA_AND s_where_argument s_where_argument | SWA_ISNULL s_column_name | SWA_Empty
 
 datatype s_group_by = SGB_Empty
 
@@ -152,7 +164,7 @@ fun and_then_oe :: "('a \<Rightarrow> 'b option_err) \<Rightarrow> 'a option_err
 (*notation and_then_oe (infixl "\<bind>" 80)*)
 
 record s_table_cell =
-  s_table_cell_rowname :: s_rowname
+  s_table_cell_column_name :: s_column_name
   s_table_cell_value :: s_value
 
 record s_join_result_cell = s_table_cell + 
@@ -174,14 +186,14 @@ record s_table =
   s_table_schema :: s_schema 
   s_table_vals :: "(s_table_cell list) list"
 
-datatype s_insert_query = SIQ "(s_rowname, s_value) fmap"
+datatype s_insert_query = SIQ "(s_column_name, s_value) fmap"
 
 datatype s_database = SD "s_table list"
 
 fun test_schema :: "unit \<Rightarrow> s_schema" where
 "test_schema _ = SS_Schema 
-    [ \<lparr> s_schema_rowname = ''id'', s_schema_rowtype = ST_Int \<rparr>
-    , \<lparr> s_schema_rowname = ''name'', s_schema_rowtype = ST_String \<rparr>
+    [ \<lparr> s_schema_column_name = ''id'', s_schema_column_type = ST_Int \<rparr>
+    , \<lparr> s_schema_column_name = ''name'', s_schema_column_type = ST_String \<rparr>
     ]"
 
 fun test_table :: "unit \<Rightarrow> s_table" where
@@ -189,8 +201,8 @@ fun test_table :: "unit \<Rightarrow> s_table" where
   \<lparr> s_table_tbl_name = STN_String ''test_table''
   , s_table_schema = test_schema ()
   , s_table_vals = [
-    [ \<lparr>s_table_cell_rowname = ''id'', s_table_cell_value = SV_Int 10\<rparr>
-    , \<lparr>s_table_cell_rowname = ''name'', s_table_cell_value = SV_String ''test''\<rparr>]
+    [ \<lparr>s_table_cell_column_name = ''id'', s_table_cell_value = SV_Int 10\<rparr>
+    , \<lparr>s_table_cell_column_name = ''name'', s_table_cell_value = SV_String ''test''\<rparr>]
   ]
   \<rparr>
 " 
@@ -203,12 +215,12 @@ fun test_db :: "unit \<Rightarrow> s_database" where
 value "SR_String ''a'' = SR_String ''b''"
 value "test_db ()"
 
-fun lookup_rowname :: "s_rowname \<Rightarrow> ('a \<Rightarrow> s_rowname) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
-"lookup_rowname rn getter [] = None" |
-"lookup_rowname rn getter (x#xs) = (
+fun lookup_column_name :: "s_column_name \<Rightarrow> ('a \<Rightarrow> s_column_name) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
+"lookup_column_name rn getter [] = None" |
+"lookup_column_name rn getter (x#xs) = (
   case (getter x = rn) of 
     True \<Rightarrow> Some x |
-    False \<Rightarrow> lookup_rowname rn getter xs
+    False \<Rightarrow> lookup_column_name rn getter xs
 )"
 
 fun lookup_tbl_name :: "s_tbl_name \<Rightarrow> ('a \<Rightarrow> s_tbl_name) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
@@ -226,9 +238,9 @@ fun is_value_correct :: "s_value \<Rightarrow> s_type \<Rightarrow> bool" where
 "is_value_correct _ _ = False"
 
 
-fun is_insert_query_correct_helper :: "s_schema \<Rightarrow> s_rowname \<Rightarrow> s_value \<Rightarrow> bool" where
-"is_insert_query_correct_helper (SS_Schema sch) rowname value = (
-  case fmlookup sch rowname of 
+fun is_insert_query_correct_helper :: "s_schema \<Rightarrow> s_column_name \<Rightarrow> s_value \<Rightarrow> bool" where
+"is_insert_query_correct_helper (SS_Schema sch) column_name value = (
+  case fmlookup sch column_name of 
     Some type_ \<Rightarrow> is_value_correct value type_ |
     Empty \<Rightarrow> False
 )"
@@ -276,9 +288,9 @@ fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argume
     None \<Rightarrow> (
       case arg of 
         SSA_Star \<Rightarrow> None |
-        SSA_Rowname rowname \<Rightarrow> (
-          case fmlookup sch rowname of 
-            None \<Rightarrow> Some (''Unknown column \"''  @ rowname @ ''\" in \"field list\"'') |
+        SSA_Rowname column_name \<Rightarrow> (
+          case fmlookup sch column_name of 
+            None \<Rightarrow> Some (''Unknown column \"''  @ column_name @ ''\" in \"field list\"'') |
             Some x \<Rightarrow> None
         )
     )
@@ -288,19 +300,19 @@ fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argume
 fun table_names_unique :: "s_tbl_name list \<Rightarrow> bool" where 
 "table_names_unique list = distinct (map show_table_name list)"
 
-fun find_in_row :: "s_rowname \<Rightarrow> s_join_row  \<Rightarrow> s_join_result_cell list" where 
+fun find_in_row :: "s_column_name \<Rightarrow> s_join_row  \<Rightarrow> s_join_result_cell list" where 
 "find_in_row rn [] = []" |
 "find_in_row rn (cell # rest) = (
-  case rn = s_table_cell_rowname cell of 
+  case rn = s_table_cell_column_name cell of 
     True \<Rightarrow> cell # find_in_row rn rest |
     False \<Rightarrow> find_in_row rn rest
 )"
 
-fun remove_from_row :: "s_rowname list \<Rightarrow> s_join_row \<Rightarrow> s_join_row" where 
+fun remove_from_row :: "s_column_name list \<Rightarrow> s_join_row \<Rightarrow> s_join_row" where 
 "remove_from_row [] x = x" |
-"remove_from_row (r # rs) x = filter (op \<noteq> r \<circ> s_table_cell_rowname) (remove_from_row rs x)"
+"remove_from_row (r # rs) x = filter (op \<noteq> r \<circ> s_table_cell_column_name) (remove_from_row rs x)"
 
-fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_row \<Rightarrow> s_join_row \<Rightarrow> ((s_join_result_cell list) option) option_err" where
+fun inner_join_using :: "s_column_name list \<Rightarrow> s_join_row \<Rightarrow> s_join_row \<Rightarrow> ((s_join_result_cell list) option) option_err" where
 "inner_join_using [] _ _ = Error ''Empty 'using' list''" |
 "inner_join_using (x#xs) l r = (
   case (find_in_row x l, find_in_row x r) of 
@@ -309,7 +321,7 @@ fun inner_join_using :: "s_rowname list \<Rightarrow> s_join_row \<Rightarrow> s
         False \<Rightarrow> Ok None |
         True \<Rightarrow> (
           let merged_cell = 
-            \<lparr> s_table_cell_rowname = x
+            \<lparr> s_table_cell_column_name = x
             , s_table_cell_value = s_table_cell_value jrc1
             , s_join_result_cell_tbl_name = s_join_result_cell_tbl_name jrc1 @ s_join_result_cell_tbl_name jrc2
             \<rparr>
@@ -368,8 +380,8 @@ fun inner_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Ri
 
 fun add_tbl_name_to_schema :: "s_tbl_name \<Rightarrow> s_schema_row \<Rightarrow> s_join_result_schema_row" where 
 "add_tbl_name_to_schema tbl_name schema_row = 
-  \<lparr> s_schema_rowname = s_schema_rowname schema_row
-  , s_schema_rowtype = s_schema_rowtype schema_row
+  \<lparr> s_schema_column_name = s_schema_column_name schema_row
+  , s_schema_column_type = s_schema_column_type schema_row
   , s_join_result_schema_tbl_name = [tbl_name]
   \<rparr>
 "
@@ -409,7 +421,7 @@ fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_row" w
 "make_empty_row [] = []" |
 "make_empty_row (schema_row#rest) = (
   let cell = 
-    \<lparr> s_table_cell_rowname = s_schema_rowname schema_row
+    \<lparr> s_table_cell_column_name = s_schema_column_name schema_row
     , s_table_cell_value = SV_Null
     , s_join_result_cell_tbl_name = s_join_result_schema_tbl_name schema_row
     \<rparr>
@@ -442,23 +454,23 @@ fun left_join :: "s_join_condition \<Rightarrow> s_join_result \<Rightarrow> s_j
       )
 )"
 
-fun find_same_rownames :: "s_join_result_schema_row list \<Rightarrow> s_join_result_schema_row list \<Rightarrow> (s_rowname list) option_err" where 
-"find_same_rownames [] _ = Ok []" |
-"find_same_rownames (l#ls) rs = (
-  case find ((op = (s_schema_rowname l)) \<circ> s_schema_rowname) ls of 
-    Some _ \<Rightarrow> Error (''Column '' @ s_schema_rowname l @ '' occurs more than once in the left table of join'') |
+fun find_same_column_names :: "s_join_result_schema_row list \<Rightarrow> s_join_result_schema_row list \<Rightarrow> (s_column_name list) option_err" where 
+"find_same_column_names [] _ = Ok []" |
+"find_same_column_names (l#ls) rs = (
+  case find ((op = (s_schema_column_name l)) \<circ> s_schema_column_name) ls of 
+    Some _ \<Rightarrow> Error (''Column '' @ s_schema_column_name l @ '' occurs more than once in the left table of join'') |
     None \<Rightarrow> (
-      case filter ((op = (s_schema_rowname l)) \<circ> s_schema_rowname) rs of 
-        [] \<Rightarrow> find_same_rownames ls rs |
-        [r] \<Rightarrow> find_same_rownames ls rs |> map_oe (op # (s_schema_rowname l)) |
-        (a # b # rest) \<Rightarrow> Error (''Column '' @ s_schema_rowname l @ '' occurs more than once in the right table of join'')
+      case filter ((op = (s_schema_column_name l)) \<circ> s_schema_column_name) rs of 
+        [] \<Rightarrow> find_same_column_names ls rs |
+        [r] \<Rightarrow> find_same_column_names ls rs |> map_oe (op # (s_schema_column_name l)) |
+        (a # b # rest) \<Rightarrow> Error (''Column '' @ s_schema_column_name l @ '' occurs more than once in the right table of join'')
     )
 )"
 
 fun natural_join :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where 
 "natural_join l r = 
-  find_same_rownames (s_join_result_schema l) (s_join_result_schema r)
-  |> and_then_oe (\<lambda>same_rownames. inner_join (Some (SJC_Using same_rownames)) l r)
+  find_same_column_names (s_join_result_schema l) (s_join_result_schema r)
+  |> and_then_oe (\<lambda>same_column_names. inner_join (Some (SJC_Using same_column_names)) l r)
 " (* definition of natural join in https://dev.mysql.com/doc/refman/8.0/en/join.html *)
 
 fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
@@ -469,7 +481,7 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
       let 
         result = s_table_vals table 
           |> map (map (\<lambda>tc. \<lparr> 
-              s_table_cell_rowname = s_table_cell_rowname tc,
+              s_table_cell_column_name = s_table_cell_column_name tc,
               s_table_cell_value = s_table_cell_value tc,
               s_join_result_cell_tbl_name = [tbl_nm]
             \<rparr>))
@@ -530,7 +542,7 @@ fun interpret_identifier :: "s_identifier \<Rightarrow> s_join_row \<Rightarrow>
 )" |
 "interpret_identifier (SI_With_Tbl_Name tbl_nm rn) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ rn @ '' in where clause'') " |
 "interpret_identifier (SI_With_Tbl_Name tbl_nm rn) (cell # rest) = (
-  case (s_table_cell_rowname cell = rn, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+  case (s_table_cell_column_name cell = rn, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
     (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
     _ \<Rightarrow> interpret_identifier (SI_With_Tbl_Name tbl_nm rn) rest
 )"
@@ -645,7 +657,9 @@ fun interpret_where :: "s_expr \<Rightarrow> s_join_result \<Rightarrow> s_join_
 "
 
 
-(*fun get_values_for_select_arguments :: "s_select_argument list \<Rightarrow> ((s_rowname, s_value) fmap) list \<Rightarrow> " *)
+
+
+(*fun get_values_for_select_arguments :: "s_select_argument list \<Rightarrow> ((s_column_name, s_value) fmap) list \<Rightarrow> " *)
 
 (*fun select_from_single_table :: "s_query \<Rightarrow> s_table \<Rightarrow> s_query_result" where
 "select_from_single_table (SQ args from where groupby) table = (
