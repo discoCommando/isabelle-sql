@@ -41,11 +41,11 @@ fun s_value_eq :: "s_value \<Rightarrow> s_value \<Rightarrow> bool" where
 "s_value_eq (SV_Null) (SV_Null) = True" |
 "s_value_eq _ _ = False"
 
-record s_schema_row = 
+record s_schema_cell = 
   s_schema_column_name :: s_column_name
   s_schema_column_type :: s_type
 
-type_synonym s_schema = "s_schema_row list"
+type_synonym s_schema = "s_schema_cell list"
 
 type_synonym s_tbl_name = string
 
@@ -80,8 +80,6 @@ datatype s_expr
   | SE_Not s_expr 
   | SE_Boolean_Primary s_boolean_primary
 
-fun show_table_name :: "s_tbl_name \<Rightarrow> string" where 
-  "show_table_name (STN_String s) = s"
 
 datatype 
   s_join_condition 
@@ -170,7 +168,7 @@ record s_table_cell =
 record s_join_result_cell = s_table_cell + 
   s_join_result_cell_tbl_name :: "s_tbl_name list"
 
-record s_join_result_schema_row = s_schema_row + 
+record s_join_result_schema_cell = s_schema_cell + 
   s_join_result_schema_tbl_name :: "s_tbl_name list"
 
 type_synonym s_join_row = "s_join_result_cell list"
@@ -178,8 +176,17 @@ type_synonym s_join_row = "s_join_result_cell list"
 type_synonym s_join_result_vals =  "s_join_row list"
 
 record s_join_result = 
-  s_join_result_schema :: "s_join_result_schema_row list"
+  s_join_result_schema :: "s_join_result_schema_cell list"
   s_join_result_vals :: s_join_result_vals
+
+record s_select_args_result_cell =
+  s_select_expr :: s_select_expr
+  s_select_value :: s_value
+
+type_synonym s_select_args_result_row = "s_select_args_result_cell list"
+
+record s_select_args_result =
+  s_select_args_result :: "s_select_args_result_row list"
 
 record s_table = 
   s_table_tbl_name :: s_tbl_name
@@ -378,10 +385,10 @@ fun inner_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Ri
     )
 )"
 
-fun add_tbl_name_to_schema :: "s_tbl_name \<Rightarrow> s_schema_row \<Rightarrow> s_join_result_schema_row" where 
-"add_tbl_name_to_schema tbl_name schema_row = 
-  \<lparr> s_schema_column_name = s_schema_column_name schema_row
-  , s_schema_column_type = s_schema_column_type schema_row
+fun add_tbl_name_to_schema :: "s_tbl_name \<Rightarrow> s_schema_cell \<Rightarrow> s_join_result_schema_cell" where 
+"add_tbl_name_to_schema tbl_name schema_cell = 
+  \<lparr> s_schema_column_name = s_schema_column_name schema_cell
+  , s_schema_column_type = s_schema_column_type schema_cell
   , s_join_result_schema_tbl_name = [tbl_name]
   \<rparr>
 "
@@ -417,13 +424,13 @@ fun inner_join :: "s_join_condition option \<Rightarrow> s_join_result \<Rightar
     )
 )"
 
-fun make_empty_row :: "s_join_result_schema_row list \<Rightarrow> s_join_row" where 
+fun make_empty_row :: "s_join_result_schema_cell list \<Rightarrow> s_join_row" where 
 "make_empty_row [] = []" |
-"make_empty_row (schema_row#rest) = (
+"make_empty_row (schema_cell#rest) = (
   let cell = 
-    \<lparr> s_table_cell_column_name = s_schema_column_name schema_row
+    \<lparr> s_table_cell_column_name = s_schema_column_name schema_cell
     , s_table_cell_value = SV_Null
-    , s_join_result_cell_tbl_name = s_join_result_schema_tbl_name schema_row
+    , s_join_result_cell_tbl_name = s_join_result_schema_tbl_name schema_cell
     \<rparr>
   in
   cell # make_empty_row rest
@@ -454,7 +461,7 @@ fun left_join :: "s_join_condition \<Rightarrow> s_join_result \<Rightarrow> s_j
       )
 )"
 
-fun find_same_column_names :: "s_join_result_schema_row list \<Rightarrow> s_join_result_schema_row list \<Rightarrow> (s_column_name list) option_err" where 
+fun find_same_column_names :: "s_join_result_schema_cell list \<Rightarrow> s_join_result_schema_cell list \<Rightarrow> (s_column_name list) option_err" where 
 "find_same_column_names [] _ = Ok []" |
 "find_same_column_names (l#ls) rs = (
   case find ((op = (s_schema_column_name l)) \<circ> s_schema_column_name) ls of 
@@ -555,6 +562,8 @@ fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> s_join_row \<Rightarrow> s_v
 "interpret_bit_expr (SBE_Add e1 e2) jr = (
   case (interpret_bit_expr e1 jr, interpret_bit_expr e2 jr) of
     (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 + i2)) |
+    (Ok SV_Null, _) \<Rightarrow> Ok SV_Null |
+    (_, Ok SV_Null) \<Rightarrow> Ok SV_Null |
     (Error x, _) \<Rightarrow> Error x |
     (_, Error x) \<Rightarrow> Error x |
     (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for addition: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
@@ -562,6 +571,8 @@ fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> s_join_row \<Rightarrow> s_v
 "interpret_bit_expr (SBE_Mult e1 e2) jr = (
   case (interpret_bit_expr e1 jr, interpret_bit_expr e2 jr) of
     (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 * i2)) |
+    (Ok SV_Null, _) \<Rightarrow> Ok SV_Null |
+    (_, Ok SV_Null) \<Rightarrow> Ok SV_Null |
     (Error x, _) \<Rightarrow> Error x |
     (_, Error x) \<Rightarrow> Error x |
     (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for multiplication: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
@@ -571,68 +582,71 @@ fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> s_join_row \<Rightarrow> s_v
 fun interpret_predicate :: "s_predicate \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where 
 "interpret_predicate (SP_Bit_Expr e) jr = interpret_bit_expr e jr"
 
-datatype s_boolean_primary_result
-  = SBPR_Bool bool
-  | SBPR_Value s_value
+fun bool_to_s_value :: "bool \<Rightarrow> s_value" where 
+"bool_to_s_value True = SV_Int 1" | 
+"bool_to_s_value False = SV_Int 0" 
 
-fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> s_join_row \<Rightarrow> s_boolean_primary_result option_err" where
+fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where
 "interpret_boolean_primary (SBP_Is_Null bp) jr = (
   interpret_boolean_primary bp jr 
   |> and_then_oe (\<lambda>res. case res of 
-    SBPR_Value SV_Null \<Rightarrow> Ok (SBPR_Bool True) |
-    _ \<Rightarrow> Ok (SBPR_Bool False)
+    SV_Null \<Rightarrow> Ok (bool_to_s_value True) |
+    _ \<Rightarrow> Ok (bool_to_s_value False)
   )
 )" |
 "interpret_boolean_primary (SBP_Comparison bp SCO_Equal pred) jr = 
   interpret_boolean_primary bp jr 
   |> and_then_oe (\<lambda>l. interpret_predicate pred jr
-  |> and_then_oe (\<lambda>r. ( 
+  |> and_then_oe (\<lambda>r. (
     case l of 
-      SBPR_Bool False \<Rightarrow> Ok (SBPR_Bool (s_value_eq (SV_Int 0) r)) | (* Booleans are 0 and 1 in mysql *)
-      SBPR_Bool True \<Rightarrow> Ok (SBPR_Bool (s_value_eq (SV_Int 1) r)) | (* https://dev.mysql.com/doc/refman/8.0/en/boolean-literals.html *)
-      SBPR_Value lv \<Rightarrow> Ok (SBPR_Bool (s_value_eq lv r))
-  )
+      SV_Null \<Rightarrow> Ok SV_Null | 
+      _ \<Rightarrow> (
+        case r of 
+          SV_Null \<Rightarrow> Ok SV_Null |
+          _ \<Rightarrow> (s_value_eq l r) |> bool_to_s_value |> Ok)
+      )
   ))
 " |
 "interpret_boolean_primary (SBP_Comparison bp SCO_Less pred) jr = 
   interpret_boolean_primary bp jr 
   |> and_then_oe (\<lambda>l. interpret_predicate pred jr
   |> and_then_oe (\<lambda>r. ( 
-    case l of 
-      SBPR_Bool _ \<Rightarrow> Ok (SBPR_Bool False) |
-      SBPR_Value lv \<Rightarrow> (
-        case (lv, r) of 
-          (SV_Int il, SV_Int ir) \<Rightarrow> Ok (SBPR_Bool (il < ir)) |
+        case (l, r) of 
+          (SV_Int il, SV_Int ir) \<Rightarrow> Ok (bool_to_s_value (il < ir)) |
+          (SV_Null, _) \<Rightarrow> Ok SV_Null |
+          (_, SV_Null) \<Rightarrow> Ok SV_Null |
           (_,_) \<Rightarrow> Error (''Not comparable values in the where clause'')
       )
-  )
   ))
 " |
-"interpret_boolean_primary (SBP_Predicate pred) jr = 
-  interpret_predicate pred jr 
-  |> map_oe SBPR_Value
-"
+"interpret_boolean_primary (SBP_Predicate pred) jr = interpret_predicate pred jr"
 
-fun interpret_expr :: "s_expr \<Rightarrow> s_join_row \<Rightarrow> bool option_err" where 
+fun is_true :: "s_value \<Rightarrow> bool" where 
+"is_true v = s_value_eq v (SV_Int 1)"
+
+fun boolean_operator :: "s_value \<Rightarrow> s_value \<Rightarrow> (bool \<Rightarrow> bool \<Rightarrow> bool) \<Rightarrow> s_value" where 
+"boolean_operator SV_Null _ _ = SV_Null" | 
+"boolean_operator _ SV_Null _ = SV_Null" | 
+"boolean_operator a b f = f (is_true a) (is_true b) |> bool_to_s_value" 
+
+fun interpret_expr :: "s_expr \<Rightarrow> s_join_row \<Rightarrow> s_value option_err" where 
 "interpret_expr (SE_Or e1 e2) jr = 
   interpret_expr e1 jr 
   |> and_then_oe (\<lambda>r1. interpret_expr e2 jr
-  |> and_then_oe (\<lambda>r2. Ok (r1 \<or> r2)))" |
+  |> and_then_oe (\<lambda>r2. boolean_operator r1 r2 (op \<or>) |> Ok))" |
 "interpret_expr (SE_And e1 e2) jr = 
   interpret_expr e1 jr 
   |> and_then_oe (\<lambda>r1. interpret_expr e2 jr
-  |> and_then_oe (\<lambda>r2. Ok (r1 \<and> r2)))" |
+  |> and_then_oe (\<lambda>r2. boolean_operator r1 r2 (op \<and>) |> Ok))" |
 "interpret_expr (SE_Not e) jr = 
   interpret_expr e jr 
-  |> and_then_oe (\<lambda>r. Ok (\<not>r))" |
-"interpret_expr (SE_Boolean_Primary bp) jr = 
-  interpret_boolean_primary bp jr
   |> map_oe (\<lambda>r. (
     case r of 
-      SBPR_Bool b \<Rightarrow> b |
-      SBPR_Value (SV_Int i) \<Rightarrow> (i = 1) | 
-      _ \<Rightarrow> False
-  ))
+      SV_Null \<Rightarrow> SV_Null |
+      _ \<Rightarrow> (\<not> (is_true r)) |> bool_to_s_value
+  ))" |
+"interpret_expr (SE_Boolean_Primary bp) jr = 
+  interpret_boolean_primary bp jr
 "
 
 fun interpret_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow> (s_join_row list) option_err" where 
@@ -641,7 +655,7 @@ fun interpret_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow
   interpret_expr e jr 
   |> and_then_oe (\<lambda>jr_res. interpret_where_helper e jrs
   |> and_then_oe (\<lambda>jrs_res.
-    case jr_res of
+    case is_true jr_res of
       True \<Rightarrow> Ok (jr # jrs_res) |
       False \<Rightarrow> Ok jrs_res
   ))
