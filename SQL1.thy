@@ -188,6 +188,7 @@ record s_group_row =
 
 record s_group_result = 
   s_group_result :: "s_group_row list"
+  s_group_result_schema :: "s_join_result_schema_cell list"
 
 record s_select_cell = 
   s_select_cell_argument :: s_select_expr
@@ -196,7 +197,8 @@ record s_select_cell =
 record s_select_row = s_group_row + 
   s_select_row_values :: "s_select_cell list"
 
-type_synonym s_select_result = "s_select_row list"
+record s_select_result = 
+  s_select_result :: "s_select_row list"
 
 record s_table = 
   s_table_tbl_name :: s_tbl_name
@@ -728,7 +730,12 @@ fun convert_to_group_result :: "s_join_result \<Rightarrow> s_group_result" wher
 "convert_to_group_result jres = (
   \<lparr> s_group_result = jres 
       |> s_join_result_vals 
-      |> map (\<lambda>row. \<lparr> s_grouped_rows = [row], s_grouping_values = [] \<rparr>)  
+      |> map (\<lambda>row. 
+        \<lparr> s_grouped_rows = [row]
+        , s_grouping_values = [] 
+        \<rparr>
+      )
+  , s_group_result_schema = s_join_result_schema jres
   \<rparr>
 )"
 
@@ -856,9 +863,15 @@ termination sorry
 fun evaluate_group_by :: "s_select_expr list \<Rightarrow> s_expr list \<Rightarrow> s_join_result \<Rightarrow> s_group_result option_err" where 
 "evaluate_group_by select_args group_args j_res = (
   case (filter has_aggregation_select_arg select_args, group_args) of 
-    ([], []) \<Rightarrow> Ok (convert_to_group_result j_res) |
-    _ \<Rightarrow> group_by_helper select_args  group_args (s_join_result_vals j_res) [] 
-      |> map_oe (\<lambda>vs. \<lparr> s_group_result = vs \<rparr>)
+    ([], []) \<Rightarrow> 
+        Ok (convert_to_group_result j_res) |
+    _ \<Rightarrow> 
+      group_by_helper select_args  group_args (s_join_result_vals j_res) [] 
+        |> map_oe (\<lambda>vs. 
+          \<lparr> s_group_result = vs
+          , s_group_result_schema = s_join_result_schema j_res  
+          \<rparr>
+        )
 )"
 
 fun evaluate_max :: "s_value list \<Rightarrow> s_value option_err" where 
@@ -895,6 +908,140 @@ fun evaluate_count :: "s_value list \<Rightarrow> int option_err" where
   |> map_oe (op + 1)
 "
 
+fun same_values :: "'a list \<Rightarrow> 'a option" where 
+"same_values [] = None" |
+"same_values (x # xs) = (
+  case xs of 
+    [] \<Rightarrow> Some x | 
+    _ \<Rightarrow> (
+      case same_values xs of 
+        None \<Rightarrow> None | 
+        Some x1 \<Rightarrow> (
+          case x1 = x of 
+            True \<Rightarrow> Some x | 
+            False \<Rightarrow> None
+        )
+    )
+)"
+
+fun evaluate_identifier_in_select_expr :: "s_group_row identifier_evaluator" 
+and evaluate_identifier_in_select_expr_helper :: "s_join_row identifier_evaluator"
+and evaluate_function_in_select_expr :: "s_group_row function_evaluator"
+and evaluate_function_in_select_expr_inside_grouping_function :: "s_join_row function_evaluator" where 
+"evaluate_identifier_in_select_expr_helper col None jr = (
+  case find_in_row col jr s_table_cell_column_name of 
+    [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in 'field list' '') |
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in field list is ambiguous'') | 
+    [cell] \<Rightarrow> Ok (s_table_cell_value cell)
+)" |
+"evaluate_identifier_in_select_expr_helper col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in field list'')" |
+"evaluate_identifier_in_select_expr_helper col (Some tbl_nm) (cell # rest) = (
+  case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
+    _ \<Rightarrow> evaluate_identifier_in_select_expr_helper col (Some tbl_nm) rest
+)" |
+"evaluate_identifier_in_select_expr col o_tbl_nm gr = 
+  gr 
+    |> s_grouped_rows 
+    |> map (evaluate_identifier_in_select_expr_helper col o_tbl_nm)
+    |> sequence_oe
+    |> and_then_oe (\<lambda>values. 
+      case same_values values of 
+        None \<Rightarrow> Error (''Cannot group on '' @ col @ '' as the values from grouped rows are ambiguous'') | 
+        Some v \<Rightarrow> Ok v
+    )
+" |
+"evaluate_function_in_select_expr_inside_grouping_function (SF_Max _) _ = Error ''Invalid use of group function''" |
+"evaluate_function_in_select_expr_inside_grouping_function (SF_Count _) _ = Error ''Invalid use of group function''" |
+"evaluate_function_in_select_expr_inside_grouping_function (SF_Sum _) _ = Error ''Invalid use of group function''" | 
+"evaluate_function_in_select_expr (SF_Max e) gr = 
+  gr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> sequence_oe 
+    |> and_then_oe evaluate_max
+" |
+"evaluate_function_in_select_expr (SF_Count e) gr = 
+  gr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> sequence_oe 
+    |> and_then_oe evaluate_count
+    |> map_oe SV_Int
+" | 
+"evaluate_function_in_select_expr (SF_Sum e) gr = 
+  gr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> sequence_oe 
+    |> and_then_oe evaluate_sum
+"
+
+fun identifier_expr :: "s_column_name \<Rightarrow> s_tbl_name option \<Rightarrow> s_expr" where 
+"identifier_expr col None = 
+  col
+    |> SI_Simple
+    |> SSE_Identifier
+    |> SBE_Simple_Expr
+    |> SP_Bit_Expr
+    |> SBP_Predicate
+    |> SE_Boolean_Primary
+" | 
+"identifier_expr col (Some tbl_name) = 
+  SI_With_Tbl_Name tbl_name col 
+    |> SSE_Identifier
+    |> SBE_Simple_Expr
+    |> SP_Bit_Expr
+    |> SBP_Predicate
+    |> SE_Boolean_Primary
+"
+
+fun evaluate_select_expr :: "s_select_expr \<Rightarrow> s_join_result_schema_cell list \<Rightarrow> s_group_row \<Rightarrow> s_select_cell list option_err" 
+and evaluate_select_expr_helper :: "s_expr \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
+"evaluate_select_expr_helper e gr = interpret_expr e gr evaluate_identifier_in_select_expr evaluate_function_in_select_expr" |
+"evaluate_select_expr (SSE_Expr e) schema gr = 
+  evaluate_select_expr_helper e gr
+    |> map_oe (\<lambda>v. [\<lparr> s_select_cell_argument = (SSE_Expr e), s_select_cell_value = v \<rparr>])
+"| 
+"evaluate_select_expr (SSE_Alias col e) schema gr = 
+  evaluate_select_expr_helper e gr
+    |> map_oe (\<lambda>v. [\<lparr> s_select_cell_argument = (SSE_Alias col e), s_select_cell_value = v \<rparr>])
+" | 
+"evaluate_select_expr (SSE_Star) schema gr = 
+  schema 
+    |> map (\<lambda>sc. (
+      case s_join_result_schema_tbl_name sc of 
+        [tn] \<Rightarrow> evaluate_select_expr_helper (identifier_expr (s_schema_column_name sc) (Some tn)) gr 
+          |>  map_oe (\<lambda>v. \<lparr> s_select_cell_argument =  (identifier_expr (s_schema_column_name sc) (Some tn) |> SSE_Expr), s_select_cell_value = v \<rparr>) |
+        _ \<Rightarrow> evaluate_select_expr_helper (identifier_expr (s_schema_column_name sc) (None)) gr 
+          |>  map_oe (\<lambda>v. \<lparr> s_select_cell_argument =  (identifier_expr (s_schema_column_name sc) (None) |> SSE_Expr), s_select_cell_value = v \<rparr>)
+    ))
+    |> sequence_oe 
+"
+  
+fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_join_result_schema_cell list \<Rightarrow> s_group_row \<Rightarrow> s_select_row option_err" where 
+"evaluate_select_single_row se schema gr = 
+  se
+    |> map (\<lambda>se. evaluate_select_expr se schema gr) 
+    |> sequence_oe
+    |> map_oe concat 
+    |> map_oe (\<lambda>res. 
+        \<lparr> s_grouped_rows = s_grouped_rows gr
+        , s_grouping_values = s_grouping_values gr
+        , s_select_row_values = res 
+        \<rparr>
+    ) 
+"
+
+fun evaluate_select :: "s_select_expr list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where 
+"evaluate_select se gres = 
+  gres 
+    |> s_group_result
+    |> map (evaluate_select_single_row se (s_group_result_schema gres)) 
+    |> sequence_oe
+    |> map_oe (\<lambda>res. \<lparr> s_select_result = res \<rparr>)
+"
+
 fun evaluate_aggregating_expr :: "s_join_row identifier_evaluator \<Rightarrow> s_function \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
 "evaluate_aggregating_expr jrev (SF_Max expr) gr = 
   gr
@@ -915,22 +1062,6 @@ fun evaluate_aggregating_expr :: "s_join_row identifier_evaluator \<Rightarrow> 
   |> and_then_oe evaluate_count
   |> map_oe SV_Int
 " 
-
-fun same_values :: "'a list \<Rightarrow> 'a option" where 
-"same_values [] = None" |
-"same_values (x # xs) = (
-  case xs of 
-    [] \<Rightarrow> Some x | 
-    _ \<Rightarrow> (
-      case same_values xs of 
-        None \<Rightarrow> None | 
-        Some x1 \<Rightarrow> (
-          case x1 = x of 
-            True \<Rightarrow> Some x | 
-            False \<Rightarrow> None
-        )
-    )
-)"
 
 type_synonym group_row_expr_evaluator = "s_select_expr_unnamed \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" 
 
