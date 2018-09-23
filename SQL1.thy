@@ -112,16 +112,6 @@ datatype s_select_expr
   = SSE_Expr s_expr
   | SSE_Alias s_column_name s_expr 
 
-record s_row_cell =
-  s_row_select_argument :: s_select_argument
-  s_row_value :: s_value
-
-datatype s_row = SS_Row "s_row_cell list"
-
-datatype s_query_result = SQR_Success "s_row list" | SQR_Error string
-
-datatype s_query = SQ "s_select_argument list" s_table_reference s_where_argument s_group_by
-
 datatype 'a option_err = Error string | Ok 'a 
 
 fun map_oe :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
@@ -168,22 +158,6 @@ record s_join_result =
   s_join_result_schema :: "s_join_result_schema_cell list"
   s_join_result_vals :: s_join_result_vals
 
-record s_select_args_result_cell =
-  s_select_expr :: s_select_expr
-  s_select_value :: s_value
-
-record s_select_args_result_row = 
-  s_select_args_result_row_vals :: "s_select_args_result_cell list"
-  s_join_result_row :: "s_join"
-
-record s_select_args_result =
-  s_select_args_result :: "s_select_args_result_row list"
-
-(*record s_group_cell =
-  s_group_cell_column_name :: "s_column_name"
-  s_group_cell_tbl_name :: "s_tbl_name list"
-  s_group_cell_values :: "s_value list"*)
-
 record s_group_row = 
   s_grouped_rows :: "s_join_row list" 
   s_grouping_values :: "(s_expr \<times> s_value) list"
@@ -218,36 +192,7 @@ datatype s_compare_type
   = SCT_Asc
   | SCT_Desc
 
-type_synonym s_select_final_result = "s_select_cell list list"
-
-datatype s_insert_query = SIQ "(s_column_name, s_value) fmap"
-
 datatype s_database = SD "s_table list"
-
-fun test_schema :: "unit \<Rightarrow> s_schema" where
-"test_schema _ = SS_Schema 
-    [ \<lparr> s_schema_column_name = ''id'', s_schema_column_type = ST_Int \<rparr>
-    , \<lparr> s_schema_column_name = ''name'', s_schema_column_type = ST_String \<rparr>
-    ]"
-
-fun test_table :: "unit \<Rightarrow> s_table" where
-"test_table _ = 
-  \<lparr> s_table_tbl_name = STN_String ''test_table''
-  , s_table_schema = test_schema ()
-  , s_table_vals = [
-    [ \<lparr>s_table_cell_column_name = ''id'', s_table_cell_value = SV_Int 10\<rparr>
-    , \<lparr>s_table_cell_column_name = ''name'', s_table_cell_value = SV_String ''test''\<rparr>]
-  ]
-  \<rparr>
-" 
-
-value "test_table () |> s_table_vals |> map ( map (\<lambda>x. s_table_cell.extend x (s_join_result_cell.fields (STN_String ''a'')) ))"
-
-fun test_db :: "unit \<Rightarrow> s_database" where 
-"test_db _ = SD (fmap_of_list [(STN_String ''test_table'', test_table ())])"
-
-value "SR_String ''a'' = SR_String ''b''"
-value "test_db ()"
 
 fun lookup_column_name :: "s_column_name \<Rightarrow> ('a \<Rightarrow> s_column_name) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
 "lookup_column_name rn getter [] = None" |
@@ -270,69 +215,6 @@ fun is_value_correct :: "s_value \<Rightarrow> s_type \<Rightarrow> bool" where
 "is_value_correct (SV_Int _) (ST_Int) = True" |
 "is_value_correct (SV_Null) _ = True" |
 "is_value_correct _ _ = False"
-
-
-fun is_insert_query_correct_helper :: "s_schema \<Rightarrow> s_column_name \<Rightarrow> s_value \<Rightarrow> bool" where
-"is_insert_query_correct_helper (SS_Schema sch) column_name value = (
-  case fmlookup sch column_name of 
-    Some type_ \<Rightarrow> is_value_correct value type_ |
-    Empty \<Rightarrow> False
-)"
-
-fun is_insert_query_correct :: "s_schema \<Rightarrow> s_insert_query \<Rightarrow> bool" where
-"is_insert_query_correct (SS_Schema sch) (SIQ iq) = (
-  let 
-      iq_dom = fmdom iq;
-      sch_dom = fmdom sch
-  in
-  fmpred (is_insert_query_correct_helper (SS_Schema sch)) iq
-  \<and> (HOL.equal iq_dom sch_dom)
-)"
-
-(*lemma is_insert_query_correct_same_no_of_args : "
-  is_insert_query_correct 
-    (SS_Schema (fmap_of_list [ (SR_String rn, t) ] )) 
-    (SIQ (fmap_of_list [ (SR_String rn, SV_Null) ])) 
-  = True" 
-  apply(induction t)
-  apply(auto)
-  done *)
-fun test_insert_query :: "unit \<Rightarrow> s_insert_query" where 
-"test_insert_query _ = SIQ (
-  fmap_of_list [(''id'', SV_Int 10), (''name'', SV_String ''Test'')]
-)"
-
-value "is_insert_query_correct_helper (SS_Schema (fmap_of_list []))"
-
-value "fBall (fset_of_list [True, False, True]) (\<lambda>x. x)"
-
-fun insert_to_table :: "s_insert_query \<Rightarrow> s_table \<Rightarrow> s_table option" where 
-"insert_to_table (SIQ iq) table = (
-  case is_insert_query_correct (schema table) (SIQ iq) of
-    False \<Rightarrow> None |
-    True \<Rightarrow> Some (table \<lparr> vals := (iq # (vals table)) \<rparr>)
-)"
-
-value "insert_to_table (test_insert_query ()) (test_table ())"
-
-fun check_schema_for_select_arguments :: "s_schema \<Rightarrow> s_select_argument list \<Rightarrow> string option" where 
-"check_schema_for_select_arguments (SS_Schema sch) (arg # args) = (
-  case check_schema_for_select_arguments (SS_Schema sch) args of 
-    Some err \<Rightarrow> Some err |
-    None \<Rightarrow> (
-      case arg of 
-        SSA_Star \<Rightarrow> None |
-        SSA_Rowname column_name \<Rightarrow> (
-          case fmlookup sch column_name of 
-            None \<Rightarrow> Some (''Unknown column \"''  @ column_name @ ''\" in \"field list\"'') |
-            Some x \<Rightarrow> None
-        )
-    )
-)" | 
-"check_schema_for_select_arguments (SS_Schema sch) [] = None" 
-
-fun table_names_unique :: "s_tbl_name list \<Rightarrow> bool" where 
-"table_names_unique list = distinct (map show_table_name list)"
 
 fun find_in_row :: "s_column_name \<Rightarrow> 'cell list \<Rightarrow> ('cell \<Rightarrow> s_column_name) \<Rightarrow> 'cell list" where 
 "find_in_row rn [] get = []" |
@@ -1416,12 +1298,6 @@ fun select :: "s_select_expr_all list \<Rightarrow> s_table_reference \<Rightarr
         Some (ob, ct) \<Rightarrow> evaluate_order_by ob ct select_res 
     ))
 "
-
-fun test_query :: "unit => s_query" where 
-"test_query _ = SQ [] (SFA_Table_Name (STN_String ''test_table'')) SWA_Empty SGB_Empty"
-
-value "select (test_query ()) (test_db ())"
-
 
 (* 
 how to add indexes/keys, 
