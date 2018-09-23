@@ -218,6 +218,8 @@ datatype s_compare_type
   = SCT_Asc
   | SCT_Desc
 
+type_synonym s_select_final_result = "s_select_cell list list"
+
 datatype s_insert_query = SIQ "(s_column_name, s_value) fmap"
 
 datatype s_database = SD "s_table list"
@@ -896,13 +898,50 @@ function group_by_helper :: "s_select_expr list \<Rightarrow> s_expr list \<Righ
   by pat_completeness auto
 termination sorry 
 
-fun evaluate_group_by :: "s_select_expr list \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_join_result \<Rightarrow> s_group_result option_err" where 
+fun identifier_expr :: "s_column_name \<Rightarrow> s_tbl_name option \<Rightarrow> s_expr" where 
+"identifier_expr col None = 
+  col
+    |> SI_Simple
+    |> SSE_Identifier
+    |> SBE_Simple_Expr
+    |> SP_Bit_Expr
+    |> SBP_Predicate
+    |> SE_Boolean_Primary
+" | 
+"identifier_expr col (Some tbl_name) = 
+  SI_With_Tbl_Name tbl_name col 
+    |> SSE_Identifier
+    |> SBE_Simple_Expr
+    |> SP_Bit_Expr
+    |> SBP_Predicate
+    |> SE_Boolean_Primary
+"
+
+fun convert_select_expr :: "s_join_result_schema_cell list \<Rightarrow> s_select_expr_all \<Rightarrow> s_select_expr list" where 
+"convert_select_expr _ (SSEA_Expr e) = [SSE_Expr e]" |
+"convert_select_expr _ (SSEA_Alias col e) = [SSE_Alias col e]" |
+"convert_select_expr schema (SSEA_Star) = 
+  schema 
+    |> map (\<lambda>sc. (
+      case s_join_result_schema_tbl_name sc of 
+        [tn] \<Rightarrow> identifier_expr (s_schema_column_name sc) (Some tn) |> SSE_Expr |
+        _ \<Rightarrow> identifier_expr (s_schema_column_name sc) (None) |> SSE_Expr
+    ))
+" 
+
+fun evaluate_group_by :: "s_select_expr_all list \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_join_result \<Rightarrow> s_group_result option_err" where 
 "evaluate_group_by select_args having_arg group_args j_res = (
-  case (filter has_aggregation_select_arg select_args, group_args, map_option has_aggregation having_arg) of 
+  let 
+    select_args_converted = 
+      select_args 
+        |> map (convert_select_expr (s_join_result_schema j_res))  
+        |> concat
+  in
+  case (filter has_aggregation_select_arg select_args_converted, group_args, map_option has_aggregation having_arg) of 
     ([], [], Some False) \<Rightarrow> 
         Ok (convert_to_group_result j_res) |
     _ \<Rightarrow> 
-      group_by_helper select_args  group_args (s_join_result_vals j_res) [] 
+      group_by_helper select_args_converted  group_args (s_join_result_vals j_res) [] 
         |> map_oe (\<lambda>vs. 
           \<lparr> s_group_result = vs
           , s_group_result_schema = s_join_result_schema j_res
@@ -1014,25 +1053,6 @@ and evaluate_function_in_select_expr_inside_grouping_function :: "s_join_row fun
     |> and_then_oe evaluate_sum
 "
 
-fun identifier_expr :: "s_column_name \<Rightarrow> s_tbl_name option \<Rightarrow> s_expr" where 
-"identifier_expr col None = 
-  col
-    |> SI_Simple
-    |> SSE_Identifier
-    |> SBE_Simple_Expr
-    |> SP_Bit_Expr
-    |> SBP_Predicate
-    |> SE_Boolean_Primary
-" | 
-"identifier_expr col (Some tbl_name) = 
-  SI_With_Tbl_Name tbl_name col 
-    |> SSE_Identifier
-    |> SBE_Simple_Expr
-    |> SP_Bit_Expr
-    |> SBP_Predicate
-    |> SE_Boolean_Primary
-"
-
 fun evaluate_select_expr :: "s_select_expr \<Rightarrow> s_group_row \<Rightarrow> s_select_cell option_err" 
 and evaluate_select_expr_helper :: "s_expr \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
 "evaluate_select_expr_helper e gr = 
@@ -1058,18 +1078,6 @@ fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_group_row 
         \<rparr>
     ) 
 "
-
-fun convert_select_expr :: "s_join_result_schema_cell list \<Rightarrow> s_select_expr_all \<Rightarrow> s_select_expr list" where 
-"convert_select_expr _ (SSEA_Expr e) = [SSE_Expr e]" |
-"convert_select_expr _ (SSEA_Alias col e) = [SSE_Alias col e]" |
-"convert_select_expr schema (SSEA_Star) = 
-  schema 
-    |> map (\<lambda>sc. (
-      case s_join_result_schema_tbl_name sc of 
-        [tn] \<Rightarrow> identifier_expr (s_schema_column_name sc) (Some tn) |> SSE_Expr |
-        _ \<Rightarrow> identifier_expr (s_schema_column_name sc) (None) |> SSE_Expr
-    ))
-" 
 
 fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where
 "evaluate_select se gres = 
@@ -1384,17 +1392,30 @@ fun evaluate_order_by :: "s_expr list \<Rightarrow> s_compare_type \<Rightarrow>
         |> map_oe (map snd)
         |> map_oe (\<lambda>vs. s_res\<lparr>s_select_result := vs\<rparr>)
 )"
- 
 
-fun select :: "s_query \<Rightarrow> s_database \<Rightarrow> s_query_result" where
-"select (SQ args from where groupby) (SD tables) = (
-  case from of 
-     SFA_Tbl_Name from_table \<Rightarrow> ( 
-      case fmlookup tables from_table of
-        None \<Rightarrow> SQR_Error (''Table '' @ (show_table_name from_table) @ '' doesn't exist'') |
-        Some t \<Rightarrow> SQR_Error ''table found''
-     ) 
-) "
+fun select :: "s_select_expr_all list \<Rightarrow> s_table_reference \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_expr option \<Rightarrow> (s_expr list \<times> s_compare_type) option \<Rightarrow> s_database \<Rightarrow> s_select_result option_err" where
+"select field_list from where group_by having order_by db = 
+  db
+    |> resolve_table_reference from
+    |> and_then_oe (\<lambda>join_res. (
+      case where of 
+        None \<Rightarrow> Ok join_res |
+        Some e \<Rightarrow> interpret_where e join_res
+    ))
+    |> and_then_oe (evaluate_group_by field_list having group_by)
+    |> and_then_oe (evaluate_select field_list)
+    |> and_then_oe (\<lambda>select_res. (
+      case having of 
+        None \<Rightarrow> Ok select_res | 
+        Some e \<Rightarrow> evaluate_having e select_res
+    ))
+    |> and_then_oe (\<lambda>select_res. (
+      case order_by of 
+        None \<Rightarrow> Ok select_res | 
+        Some ([], _) \<Rightarrow> Ok select_res | 
+        Some (ob, ct) \<Rightarrow> evaluate_order_by ob ct select_res 
+    ))
+"
 
 fun test_query :: "unit => s_query" where 
 "test_query _ = SQ [] (SFA_Table_Name (STN_String ''test_table'')) SWA_Empty SGB_Empty"
