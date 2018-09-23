@@ -103,12 +103,14 @@ and
     = SFA_Table_Factor s_table_factor 
     | SFA_Join_Table s_join_table 
 
+datatype s_select_expr_all
+  = SSEA_Expr s_expr
+  | SSEA_Alias s_column_name s_expr 
+  | SSEA_Star
+
 datatype s_select_expr 
   = SSE_Expr s_expr
   | SSE_Alias s_column_name s_expr 
-  | SSE_Star
-
-
 
 record s_row_cell =
   s_row_select_argument :: s_select_argument
@@ -723,8 +725,7 @@ fun has_aggregation :: "s_expr \<Rightarrow> bool" where
 
 fun has_aggregation_select_arg :: "s_select_expr \<Rightarrow> bool" where 
 "has_aggregation_select_arg (SSE_Expr e) = has_aggregation e" |
-"has_aggregation_select_arg (SSE_Alias _ e) = has_aggregation e" |
-"has_aggregation_select_arg (SSE_Star) = False"
+"has_aggregation_select_arg (SSE_Alias _ e) = has_aggregation e"
 
 fun convert_to_group_result :: "s_join_result \<Rightarrow> s_group_result" where 
 "convert_to_group_result jres = (
@@ -739,14 +740,37 @@ fun convert_to_group_result :: "s_join_result \<Rightarrow> s_group_result" wher
   \<rparr>
 )"
 
-fun find_in_select_exprs :: "s_column_name \<Rightarrow> s_select_expr list \<Rightarrow> s_expr list" where 
-"find_in_select_exprs col [] = []" |
-"find_in_select_exprs col1 ((SSE_Alias col2 expr) # rest) = (
-  case col1 = col2 of 
-    True \<Rightarrow> expr # find_in_select_exprs col1 rest |
-    False \<Rightarrow> find_in_select_exprs col1 rest
-)" | 
-"find_in_select_exprs col1 (_ # rest) = find_in_select_exprs col1 rest"
+fun is_simple_identifier :: "s_expr \<Rightarrow> s_identifier option" where 
+"is_simple_identifier (SE_Boolean_Primary (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier x))))) = Some x" |
+"is_simple_identifier _ = None"
+
+fun find_in_select_exprs :: "s_column_name \<Rightarrow> ('cell \<Rightarrow> s_select_expr) \<Rightarrow> (s_expr \<Rightarrow> 'cell \<Rightarrow> 'result) \<Rightarrow> 'cell list \<Rightarrow> 'result list" where 
+"find_in_select_exprs col f rf [] = []" |
+"find_in_select_exprs col1 f rf (c # rest) = (
+  case f c of 
+    (SSE_Alias col2 expr) \<Rightarrow> (
+      case col1 = col2 of 
+        True \<Rightarrow> rf expr c # find_in_select_exprs col1 f rf rest |
+        False \<Rightarrow> find_in_select_exprs col1 f rf rest
+    ) | 
+    (SSE_Expr e) \<Rightarrow> (
+      case (is_simple_identifier e = Some (SI_Simple col1)) of 
+        True \<Rightarrow> rf e c # find_in_select_exprs col1 f rf rest |
+        False \<Rightarrow>  find_in_select_exprs col1 f rf rest
+    )
+)"
+
+fun find_in_select_exprs_with_tbl_nm :: "s_column_name \<Rightarrow> s_tbl_name \<Rightarrow> ('cell \<Rightarrow> s_select_expr) \<Rightarrow> (s_expr \<Rightarrow> 'cell \<Rightarrow> 'result) \<Rightarrow> 'cell list \<Rightarrow> 'result list" where 
+"find_in_select_exprs_with_tbl_nm col tbl_nm f rf [] = []" |
+"find_in_select_exprs_with_tbl_nm col1 tbl_nm f rf (c # rest) = (
+  case f c of 
+    (SSE_Alias col2 expr) \<Rightarrow> find_in_select_exprs_with_tbl_nm col1 tbl_nm f rf rest | 
+    (SSE_Expr e) \<Rightarrow> (
+      case (is_simple_identifier e = Some (SI_With_Tbl_Name tbl_nm col1)) of 
+        True \<Rightarrow> rf e c # find_in_select_exprs_with_tbl_nm col1 tbl_nm f rf rest |
+        False \<Rightarrow>  find_in_select_exprs_with_tbl_nm col1 tbl_nm f rf rest
+    )
+)"
 
 (* MySQL resolves unqualified column or alias references in ORDER BY clauses by searching in the select_expr values, then in the columns of the tables in the FROM clause. For GROUP BY or HAVING clauses, it searches the FROM clause before searching in the select_expr values.
 From: https://dev.mysql.com/doc/refman/8.0/en/select.html *)
@@ -755,7 +779,7 @@ and evaluate_function_in_group_expr :: "s_join_row function_evaluator" where
 "evaluate_identifier_in_group_expr select_exprs col None jr = (
   case find_in_row col jr s_table_cell_column_name of 
     [] \<Rightarrow> (
-      case find_in_select_exprs col select_exprs of 
+      case find_in_select_exprs col id (\<lambda>e _. e) select_exprs of 
         [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in group statement'') |
         (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in group statement is ambiguous'') | 
         [expr] \<Rightarrow> 
@@ -996,35 +1020,24 @@ fun identifier_expr :: "s_column_name \<Rightarrow> s_tbl_name option \<Rightarr
     |> SE_Boolean_Primary
 "
 
-fun evaluate_select_expr :: "s_select_expr \<Rightarrow> s_join_result_schema_cell list \<Rightarrow> s_group_row \<Rightarrow> s_select_cell list option_err" 
+fun evaluate_select_expr :: "s_select_expr \<Rightarrow> s_group_row \<Rightarrow> s_select_cell option_err" 
 and evaluate_select_expr_helper :: "s_expr \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
-"evaluate_select_expr_helper e gr = interpret_expr e gr evaluate_identifier_in_select_expr evaluate_function_in_select_expr" |
-"evaluate_select_expr (SSE_Expr e) schema gr = 
+"evaluate_select_expr_helper e gr = 
+  interpret_expr e gr evaluate_identifier_in_select_expr evaluate_function_in_select_expr
+" |
+"evaluate_select_expr (SSE_Expr e) gr = 
   evaluate_select_expr_helper e gr
-    |> map_oe (\<lambda>v. [\<lparr> s_select_cell_argument = (SSE_Expr e), s_select_cell_value = v \<rparr>])
+    |> map_oe (\<lambda>v. \<lparr> s_select_cell_argument = (SSE_Expr e), s_select_cell_value = v \<rparr>)
 "| 
-"evaluate_select_expr (SSE_Alias col e) schema gr = 
+"evaluate_select_expr (SSE_Alias col e) gr = 
   evaluate_select_expr_helper e gr
-    |> map_oe (\<lambda>v. [\<lparr> s_select_cell_argument = (SSE_Alias col e), s_select_cell_value = v \<rparr>])
-" | 
-"evaluate_select_expr (SSE_Star) schema gr = 
-  schema 
-    |> map (\<lambda>sc. (
-      case s_join_result_schema_tbl_name sc of 
-        [tn] \<Rightarrow> evaluate_select_expr_helper (identifier_expr (s_schema_column_name sc) (Some tn)) gr 
-          |>  map_oe (\<lambda>v. \<lparr> s_select_cell_argument =  (identifier_expr (s_schema_column_name sc) (Some tn) |> SSE_Expr), s_select_cell_value = v \<rparr>) |
-        _ \<Rightarrow> evaluate_select_expr_helper (identifier_expr (s_schema_column_name sc) (None)) gr 
-          |>  map_oe (\<lambda>v. \<lparr> s_select_cell_argument =  (identifier_expr (s_schema_column_name sc) (None) |> SSE_Expr), s_select_cell_value = v \<rparr>)
-    ))
-    |> sequence_oe 
-"
-  
-fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_join_result_schema_cell list \<Rightarrow> s_group_row \<Rightarrow> s_select_row option_err" where 
-"evaluate_select_single_row se schema gr = 
+    |> map_oe (\<lambda>v. \<lparr> s_select_cell_argument = (SSE_Alias col e), s_select_cell_value = v \<rparr>)
+" 
+fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_group_row \<Rightarrow> s_select_row option_err" where 
+"evaluate_select_single_row se gr = 
   se
-    |> map (\<lambda>se. evaluate_select_expr se schema gr) 
+    |> map (\<lambda>se. evaluate_select_expr se gr) 
     |> sequence_oe
-    |> map_oe concat 
     |> map_oe (\<lambda>res. 
         \<lparr> s_grouped_rows = s_grouped_rows gr
         , s_grouping_values = s_grouping_values gr
@@ -1033,13 +1046,125 @@ fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_join_resul
     ) 
 "
 
-fun evaluate_select :: "s_select_expr list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where 
+fun convert_select_expr :: "s_join_result_schema_cell list \<Rightarrow> s_select_expr_all \<Rightarrow> s_select_expr list" where 
+"convert_select_expr _ (SSEA_Expr e) = [SSE_Expr e]" |
+"convert_select_expr _ (SSEA_Alias col e) = [SSE_Alias col e]" |
+"convert_select_expr schema (SSEA_Star) = 
+  schema 
+    |> map (\<lambda>sc. (
+      case s_join_result_schema_tbl_name sc of 
+        [tn] \<Rightarrow> identifier_expr (s_schema_column_name sc) (Some tn) |> SSE_Expr |
+        _ \<Rightarrow> identifier_expr (s_schema_column_name sc) (None) |> SSE_Expr
+    ))
+" 
+
+fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where
 "evaluate_select se gres = 
   gres 
     |> s_group_result
-    |> map (evaluate_select_single_row se (s_group_result_schema gres)) 
+    |> map (evaluate_select_single_row (se |> map (convert_select_expr (s_group_result_schema gres)) |> concat)) 
     |> sequence_oe
     |> map_oe (\<lambda>res. \<lparr> s_select_result = res \<rparr>)
+"
+
+(*MySQL resolves unqualified column or alias references in ORDER BY clauses by searching in the select_expr values, then in the columns of the tables in the FROM clause. For GROUP BY or HAVING clauses, it searches the FROM clause before searching in the select_expr values. (For GROUP BY and HAVING, this differs from the pre-MySQL 5.0 behavior that used the same rules as for ORDER BY.) *)
+(*The SQL standard requires that HAVING must reference only columns in the GROUP BY clause or columns used in aggregate functions. However, MySQL supports an extension to this behavior, and permits HAVING to refer to columns in the SELECT list and columns in outer subqueries as well.*)
+(*There is a difference in resolving nested group functions. SUM(SUM(x)) will fail in MySQL, SUM(a) where we have SUM(x) as a in field list - this will return NULL (even though both are equivalent). Here both will fail *)
+fun evaluate_identifier_in_having :: "s_select_row identifier_evaluator" 
+and evaluate_function_in_having :: "s_select_row function_evaluator" 
+and evaluate_identifier_in_having_inside_aggr_function :: "s_select_expr list \<Rightarrow> s_join_row identifier_evaluator"
+and evaluate_function_in_having_inside_aggr_function :: "s_join_row function_evaluator" where 
+"evaluate_identifier_in_having col None sr = (
+  case filter (\<lambda>(expr, v). is_simple_identifier expr = Some (SI_Simple col)) (s_grouping_values sr) of 
+    ((_, v) # rest) \<Rightarrow> Ok v |
+    _ \<Rightarrow> (
+      case find_in_select_exprs col s_select_cell_argument (\<lambda>e. s_select_cell_value) (s_select_row_values sr) of 
+        [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in having clause'') |
+        (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') |
+        [v] \<Rightarrow> Ok v
+    )
+)" | 
+"evaluate_identifier_in_having col (Some tbl_nm) sr = (
+  case filter (\<lambda>(expr, v). is_simple_identifier expr = Some (SI_With_Tbl_Name tbl_nm col)) (s_grouping_values sr) of 
+    ((_, v) # rest) \<Rightarrow> Ok v |
+    _ \<Rightarrow> (
+      case 
+          find_in_select_exprs_with_tbl_nm col tbl_nm s_select_cell_argument (\<lambda>e. s_select_cell_value) (s_select_row_values sr)
+      of 
+        [] \<Rightarrow> Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in having clause'') |
+        (x # y # zs) \<Rightarrow> Error (''Column '' @ tbl_nm @ ''.'' @ col @ '' in having clause is ambiguous'') |
+        [v] \<Rightarrow> Ok v
+    )
+)" |
+"evaluate_function_in_having (SF_Max e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
+        evaluate_function_in_having_inside_aggr_function
+    )
+    |> sequence_oe 
+    |> and_then_oe evaluate_max" |
+"evaluate_function_in_having (SF_Sum e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
+        evaluate_function_in_having_inside_aggr_function
+    )
+    |> sequence_oe 
+    |> and_then_oe evaluate_sum" |
+"evaluate_function_in_having (SF_Count e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
+        evaluate_function_in_having_inside_aggr_function
+    )
+    |> sequence_oe 
+    |> and_then_oe evaluate_count
+    |> map_oe SV_Int" |
+"evaluate_identifier_in_having_inside_aggr_function s_exprs col None jr = (
+  case find_in_row col jr s_table_cell_column_name of 
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') | 
+    [cell] \<Rightarrow> Ok (s_table_cell_value cell) | 
+    [] \<Rightarrow> (
+      case find_in_select_exprs col id (\<lambda>e _. e) s_exprs of 
+        [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in having clause'') |
+        (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') |
+        [e] \<Rightarrow> interpret_expr e jr (evaluate_identifier_in_having_inside_aggr_function []) evaluate_function_in_having_inside_aggr_function
+    )
+)" |
+"evaluate_identifier_in_having_inside_aggr_function s_exprs col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in having cluase'')" |
+"evaluate_identifier_in_having_inside_aggr_function s_exprs col (Some tbl_nm) (cell # rest) = (
+  case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
+    _ \<Rightarrow> evaluate_identifier_in_having_inside_aggr_function s_exprs col (Some tbl_nm) rest
+)" |
+"evaluate_function_in_having_inside_aggr_function (SF_Max _) jr = Error ''Invalid use of group function''" |
+"evaluate_function_in_having_inside_aggr_function (SF_Sum _) jr = Error ''Invalid use of group function''" |
+"evaluate_function_in_having_inside_aggr_function (SF_Count _) jr = Error ''Invalid use of group function''" 
+
+fun evaluate_having :: "s_expr \<Rightarrow> s_select_result \<Rightarrow> s_select_result option_err" where 
+"evaluate_having expr s_res = 
+  s_res
+    |> s_select_result
+    |> map (\<lambda>sr. interpret_expr expr sr evaluate_identifier_in_having evaluate_function_in_having 
+      |> map_oe (\<lambda>res. (sr, res))
+    )
+    |> sequence_oe
+    |> map_oe (filter (\<lambda>(_, res). is_true res))
+    |> map_oe (map (\<lambda>(sr, _). sr)) 
+    |> map_oe (\<lambda>srs. \<lparr> s_select_result = srs \<rparr>)
 "
 
 fun evaluate_aggregating_expr :: "s_join_row identifier_evaluator \<Rightarrow> s_function \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
@@ -1082,7 +1207,7 @@ fun evaluate_jr_identifier_expr_in_having :: "s_select_expr list \<Rightarrow> s
 "evaluate_jr_identifier_expr_in_having select_exprs col None jr = (
   case find_in_row col jr s_table_cell_column_name of 
     [] \<Rightarrow> (
-      case find_in_select_exprs col select_exprs of 
+      case find_in_select_exprs col select_exprs  of 
         [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in having clause'') |
         (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') | 
         [expr] \<Rightarrow> (
