@@ -191,6 +191,7 @@ record s_group_row =
 record s_group_result = 
   s_group_result :: "s_group_row list"
   s_group_result_schema :: "s_join_result_schema_cell list"
+  s_group_result_grouped :: bool
 
 record s_select_cell = 
   s_select_cell_argument :: s_select_expr
@@ -201,11 +202,21 @@ record s_select_row = s_group_row +
 
 record s_select_result = 
   s_select_result :: "s_select_row list"
+  s_select_result_grouped :: bool
 
 record s_table = 
   s_table_tbl_name :: s_tbl_name
   s_table_schema :: s_schema 
   s_table_vals :: "(s_table_cell list) list"
+
+datatype s_compare 
+  = GT
+  | LT
+  | EQ 
+
+datatype s_compare_type 
+  = SCT_Asc
+  | SCT_Desc
 
 datatype s_insert_query = SIQ "(s_column_name, s_value) fmap"
 
@@ -737,6 +748,7 @@ fun convert_to_group_result :: "s_join_result \<Rightarrow> s_group_result" wher
         \<rparr>
       )
   , s_group_result_schema = s_join_result_schema jres
+  , s_group_result_grouped = False
   \<rparr>
 )"
 
@@ -884,16 +896,17 @@ function group_by_helper :: "s_select_expr list \<Rightarrow> s_expr list \<Righ
   by pat_completeness auto
 termination sorry 
 
-fun evaluate_group_by :: "s_select_expr list \<Rightarrow> s_expr list \<Rightarrow> s_join_result \<Rightarrow> s_group_result option_err" where 
-"evaluate_group_by select_args group_args j_res = (
-  case (filter has_aggregation_select_arg select_args, group_args) of 
-    ([], []) \<Rightarrow> 
+fun evaluate_group_by :: "s_select_expr list \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_join_result \<Rightarrow> s_group_result option_err" where 
+"evaluate_group_by select_args having_arg group_args j_res = (
+  case (filter has_aggregation_select_arg select_args, group_args, map_option has_aggregation having_arg) of 
+    ([], [], Some False) \<Rightarrow> 
         Ok (convert_to_group_result j_res) |
     _ \<Rightarrow> 
       group_by_helper select_args  group_args (s_join_result_vals j_res) [] 
         |> map_oe (\<lambda>vs. 
           \<lparr> s_group_result = vs
-          , s_group_result_schema = s_join_result_schema j_res  
+          , s_group_result_schema = s_join_result_schema j_res
+          , s_group_result_grouped = True
           \<rparr>
         )
 )"
@@ -1064,7 +1077,7 @@ fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_group_result \<Ri
     |> s_group_result
     |> map (evaluate_select_single_row (se |> map (convert_select_expr (s_group_result_schema gres)) |> concat)) 
     |> sequence_oe
-    |> map_oe (\<lambda>res. \<lparr> s_select_result = res \<rparr>)
+    |> map_oe (\<lambda>res. \<lparr> s_select_result = res, s_select_result_grouped = s_group_result_grouped gres  \<rparr>)
 "
 
 (*MySQL resolves unqualified column or alias references in ORDER BY clauses by searching in the select_expr values, then in the columns of the tables in the FROM clause. For GROUP BY or HAVING clauses, it searches the FROM clause before searching in the select_expr values. (For GROUP BY and HAVING, this differs from the pre-MySQL 5.0 behavior that used the same rules as for ORDER BY.) *)
@@ -1164,81 +1177,214 @@ fun evaluate_having :: "s_expr \<Rightarrow> s_select_result \<Rightarrow> s_sel
     |> sequence_oe
     |> map_oe (filter (\<lambda>(_, res). is_true res))
     |> map_oe (map (\<lambda>(sr, _). sr)) 
-    |> map_oe (\<lambda>srs. \<lparr> s_select_result = srs \<rparr>)
+    |> map_oe (\<lambda>srs. \<lparr> s_select_result = srs, s_select_result_grouped = s_select_result_grouped s_res  \<rparr>)
 "
 
-fun evaluate_aggregating_expr :: "s_join_row identifier_evaluator \<Rightarrow> s_function \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
-"evaluate_aggregating_expr jrev (SF_Max expr) gr = 
-  gr
-  |> map (\<lambda>jr. interpret_expr expr jr jrev)
-  |> sequence_oe
-  |> and_then_oe evaluate_max
-" |
-"evaluate_aggregating_expr jrev (SF_Sum expr) gr = 
-  gr
-  |> map (\<lambda>jr. interpret_expr expr jr jrev)
-  |> sequence_oe
-  |> and_then_oe evaluate_sum
-" | 
-"evaluate_aggregating_expr jrev (SF_Count expr) gr = 
-  gr
-  |> map (\<lambda>jr. interpret_expr expr jr jrev)
-  |> sequence_oe
-  |> and_then_oe evaluate_count
-  |> map_oe SV_Int
-" 
-
-type_synonym group_row_expr_evaluator = "s_select_expr_unnamed \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" 
-
-fun evaluate_unnamed_expr :: "s_join_row expr_evaluator \<Rightarrow> s_select_expr_unnamed \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
-"evaluate_unnamed_expr jrev (SSEU_Expr e) gr = 
-  gr 
-  |> map (\<lambda>jr. interpret_expr e jr jrev)
-  |> sequence_oe 
-  |> and_then_oe (\<lambda>vs. (
-    case same_values vs of 
-      Some v \<Rightarrow> Ok v | 
-      None \<Rightarrow> Error (''Values are not the same in the grouped row'')
-  ))
-" | 
-"evaluate_unnamed_expr jrev (SSEU_Aggregating ae) gr = evaluate_aggregating_expr jrev ae gr"
-
-fun evaluate_jr_identifier_expr_in_having :: "s_select_expr list \<Rightarrow> s_join_row expr_evaluator" where
-"evaluate_jr_identifier_expr_in_having select_exprs col None jr = (
-  case find_in_row col jr s_table_cell_column_name of 
-    [] \<Rightarrow> (
-      case find_in_select_exprs col select_exprs  of 
-        [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in having clause'') |
-        (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') | 
-        [expr] \<Rightarrow> (
-          case expr of 
-            (SSEU_Aggregating ae) \<Rightarrow> evaluate_unnamed_expr (evaluate_identifier_expr_in_having []) ae  |
-            (SSEU_Expr e) \<Rightarrow> evaluate_identifier_in_group_expr [] col None jr (* evaluating without select expressions *)
-        )
-    ) |
-    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in group statement is ambiguous'') | 
-    [cell] \<Rightarrow> Ok (s_table_cell_value cell)
-)" |
-"evaluate_jr_identifier_expr_in_having se col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in group statement'') " |
-"evaluate_jr_identifier_expr_in_having se col (Some tbl_nm) (cell # rest) = (
-  case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
-    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
-    _ \<Rightarrow> evaluate_identifier_in_group_expr se col (Some tbl_nm) rest
+fun compare_string :: "string \<Rightarrow> string \<Rightarrow> s_compare" where 
+"compare_string [] [] = EQ" | 
+"compare_string (l # ls) [] = GT" |
+"compare_string [] (r # rs) = LT" | 
+"compare_string (l # ls) (r # rs) = (
+  case nat_of_char l < nat_of_char r of 
+    True \<Rightarrow> LT | 
+    False \<Rightarrow> (
+      case nat_of_char l > nat_of_char r of 
+        True \<Rightarrow> GT | 
+        False \<Rightarrow> EQ
+    )
 )"
 
+fun compare_int :: "int \<Rightarrow> int \<Rightarrow> s_compare" where 
+"compare_int i1 i2 = (
+  case i1 < i2 of 
+    True \<Rightarrow> LT |
+    False \<Rightarrow> (
+      case i1 > i2 of 
+        True \<Rightarrow> GT |
+        False \<Rightarrow> EQ
+    )  
+)"
 
-fun evaluate_having :: "s_select_expr list \<Rightarrow> s_select_expr_unnamed list \<Rightarrow> s_group_result \<Rightarrow> s_group_result option_err" where 
-"evaluate_having select_args having_by_args group_res = 
-  "
+fun compare_s_values :: "s_value \<Rightarrow> s_value \<Rightarrow> s_compare option_err" where 
+"compare_s_values (SV_Null) _ = Ok LT" | 
+"compare_s_values _ (SV_Null) = Ok GT" | 
+"compare_s_values (SV_Int i1) (SV_Int i2) = Ok (compare_int i1 i2)" |
+"compare_s_values (SV_String s1) (SV_String s2) = Ok (compare_string s1 s2)" | 
+"compare_s_values v1 v2 = Error (''Cannot compare values of different type: '' @ show_s_value v1 @ '' and '' @ show_s_value v2)"
 
-(*fun get_values_for_select_arguments :: "s_select_argument list \<Rightarrow> ((s_column_name, s_value) fmap) list \<Rightarrow> " *)
+datatype 'a bin_tree 
+  = Empty 
+  | Node 'a "'a bin_tree" "'a bin_tree"  
 
-(*fun select_from_single_table :: "s_query \<Rightarrow> s_table \<Rightarrow> s_query_result" where
-"select_from_single_table (SQ args from where groupby) table = (
-  case check_schema_for_select_arguments (schema table) args of 
-    Some err \<Rightarrow> SQR_Error err |
-    None \<Rightarrow> 
-)"*)
+fun insert :: "'a \<Rightarrow> ('a \<Rightarrow> 'a \<Rightarrow> s_compare option_err) \<Rightarrow> 'a bin_tree \<Rightarrow> 'a bin_tree option_err" where 
+"insert x c Empty = Ok (Node x Empty Empty)" |
+"insert x1 c (Node x2 t1 t2) = (
+  c x1 x2
+    |> and_then_oe (\<lambda>r. (
+      case r of 
+        LT \<Rightarrow> insert x1 c t1 
+          |> map_oe (\<lambda>t11. Node x2 t11 t2) | 
+        _ \<Rightarrow> insert x1 c t2 
+          |> map_oe (\<lambda>t22. Node x2 t1 t22)
+    )) 
+)
+"
+
+fun list_of_bin_tree :: "s_compare_type \<Rightarrow> 'a bin_tree \<Rightarrow> 'a list" where 
+"list_of_bin_tree _ Empty = []" | 
+"list_of_bin_tree (SCT_Asc) (Node x l r) = list_of_bin_tree (SCT_Asc) l @ [x] @ list_of_bin_tree (SCT_Asc) r" |
+"list_of_bin_tree (SCT_Desc) (Node x l r) = list_of_bin_tree (SCT_Desc) r @ [x] @ list_of_bin_tree (SCT_Desc) l" 
+
+fun compare_select_rows :: "(s_value list \<times> s_select_row) \<Rightarrow> (s_value list \<times> s_select_row) \<Rightarrow> s_compare option_err" where 
+"compare_select_rows ([], _) ([], _) = Ok EQ" | 
+"compare_select_rows ((x # xs), _) ([], _) = Error ''Different length of compared lists for compare select rows''" |
+"compare_select_rows ([], _) ((x # xs), _) = Error ''Different length of compared lists for compare select rows''" |
+"compare_select_rows ((l # ls), lr) ((r # rs), rr) = 
+  compare_s_values l r 
+    |> and_then_oe (\<lambda>res. (
+      case res of 
+        EQ \<Rightarrow> compare_select_rows (ls, lr) (rs, rr) | 
+        _ \<Rightarrow> Ok res
+    ))
+"
+
+fun evaluate_identifier_in_order_by :: "s_select_row identifier_evaluator" 
+and evaluate_identifier_in_order_by_helper :: "s_join_row identifier_evaluator"
+and evaluate_function_in_order_by :: "s_select_row function_evaluator" 
+and evaluate_identifier_in_order_by_inside_grouping_function :: "s_select_expr list \<Rightarrow> s_join_row identifier_evaluator"
+and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row function_evaluator"  where 
+"evaluate_identifier_in_order_by_helper col None jr = (
+  case find_in_row col jr s_table_cell_column_name of 
+    [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in 'order clause' '') |
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') | 
+    [cell] \<Rightarrow> Ok (s_table_cell_value cell)
+)" |
+"evaluate_identifier_in_order_by_helper col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in order clause'')" |
+"evaluate_identifier_in_order_by_helper col (Some tbl_nm) (cell # rest) = (
+  case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
+    _ \<Rightarrow> evaluate_identifier_in_select_expr_helper col (Some tbl_nm) rest
+)"|
+"evaluate_identifier_in_order_by col None sr = (
+  case find_in_select_exprs col s_select_cell_argument (\<lambda>e. s_select_cell_value) (s_select_row_values sr) of 
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
+    [v] \<Rightarrow> Ok v | 
+    [] \<Rightarrow> (
+      sr 
+        |> s_grouped_rows 
+        |> map (evaluate_identifier_in_order_by_helper col None)
+        |> sequence_oe
+        |> and_then_oe (\<lambda>values. 
+          case same_values values of 
+            None \<Rightarrow> Error (''Cannot group on '' @ col @ '' as the values from grouped rows are ambiguous'') | 
+            Some v \<Rightarrow> Ok v
+        )
+    )
+)" | 
+"evaluate_identifier_in_order_by col (Some tbl_nm) sr = (
+  case find_in_select_exprs_with_tbl_nm col tbl_nm s_select_cell_argument (\<lambda>e. s_select_cell_value) (s_select_row_values sr) of 
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
+    [v] \<Rightarrow> Ok v | 
+    [] \<Rightarrow> (
+      sr 
+        |> s_grouped_rows 
+        |> map (evaluate_identifier_in_order_by_helper col (Some tbl_nm))
+        |> sequence_oe
+        |> and_then_oe (\<lambda>values. 
+          case same_values values of 
+            None \<Rightarrow> Error (''Cannot group on '' @ col @ '' as the values from grouped rows are ambiguous'') | 
+            Some v \<Rightarrow> Ok v
+        )
+    )
+)" | 
+"evaluate_function_in_order_by (SF_Max e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
+        evaluate_function_in_order_by_inside_grouping_function
+    ) 
+    |> sequence_oe 
+    |> and_then_oe evaluate_max" |
+"evaluate_function_in_order_by (SF_Sum e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
+        evaluate_function_in_order_by_inside_grouping_function
+    ) 
+    |> sequence_oe 
+    |> and_then_oe evaluate_sum" | 
+"evaluate_function_in_order_by (SF_Count e) sr = 
+  sr 
+    |> s_grouped_rows
+    |> map (\<lambda>jr. 
+      interpret_expr 
+        e 
+        jr 
+        (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
+        evaluate_function_in_order_by_inside_grouping_function
+    ) 
+    |> sequence_oe 
+    |> and_then_oe evaluate_count
+    |> map_oe SV_Int
+" |
+"evaluate_identifier_in_order_by_inside_grouping_function select_exprs col None jr = (
+  case find_in_select_exprs col id (\<lambda>e _. e) select_exprs of 
+    (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
+    [e] \<Rightarrow> interpret_expr e jr (evaluate_identifier_in_order_by_inside_grouping_function []) evaluate_function_in_order_by_inside_grouping_function |
+    [] \<Rightarrow> (
+      case find_in_row col jr s_table_cell_column_name of 
+        (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
+        [cell] \<Rightarrow> Ok (s_table_cell_value cell) | 
+        [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in order clause'')
+    )
+)" | 
+"evaluate_identifier_in_order_by_inside_grouping_function select_exprs col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in order clause'')" |
+"evaluate_identifier_in_order_by_inside_grouping_function select_exprs col (Some tbl_nm) (cell # rest) = (
+  case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
+    (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
+    _ \<Rightarrow> evaluate_identifier_in_order_by_inside_grouping_function select_exprs col (Some tbl_nm) rest
+)" | 
+"evaluate_function_in_order_by_inside_grouping_function (SF_Max _) _ = Error ''Invalid use of grouping function''" |
+"evaluate_function_in_order_by_inside_grouping_function (SF_Sum _) _ = Error ''Invalid use of grouping function''" |
+"evaluate_function_in_order_by_inside_grouping_function (SF_Count _) _ = Error ''Invalid use of grouping function''" 
+
+fun evaluate_expr_in_order_by :: "s_expr \<Rightarrow> s_select_row \<Rightarrow> s_value option_err" where 
+"evaluate_expr_in_order_by e sr = 
+  interpret_expr 
+    e 
+    sr
+    evaluate_identifier_in_order_by
+    evaluate_function_in_order_by
+"
+
+fun evaluate_order_by :: "s_expr list \<Rightarrow> s_compare_type \<Rightarrow> s_select_result \<Rightarrow> s_select_result option_err" where 
+"evaluate_order_by exprs ct s_res = (
+  case (filter has_aggregation exprs, s_select_result_grouped s_res) of
+    ((x # xs), False) \<Rightarrow> Error (''Expressions in ORDER BY contain aggregate function and apply to the result of a non-aggregated query'') | 
+    _ \<Rightarrow> 
+      s_res 
+        |> s_select_result
+        |> map (\<lambda>sr. 
+          exprs 
+            |> map (\<lambda>e. evaluate_expr_in_order_by e sr) 
+            |> sequence_oe 
+            |> map_oe (\<lambda>vs. (vs, sr))
+        ) 
+        |> sequence_oe 
+        |> and_then_oe (foldl (\<lambda>tree v. tree |> and_then_oe (insert v compare_select_rows)) (Ok Empty))
+        |> map_oe (list_of_bin_tree ct)
+        |> map_oe (map snd)
+        |> map_oe (\<lambda>vs. s_res\<lparr>s_select_result := vs\<rparr>)
+)"
+ 
 
 fun select :: "s_query \<Rightarrow> s_database \<Rightarrow> s_query_result" where
 "select (SQ args from where groupby) (SD tables) = (
