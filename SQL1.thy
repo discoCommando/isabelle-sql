@@ -1,23 +1,54 @@
 theory SQL1
-  imports Main "~~/src/HOL/Library/Finite_Map"
+  imports Main 
 begin
+
+
+datatype 'a option_err = Error string | Ok 'a 
 
 fun pipe :: "'a \<Rightarrow> ('a \<Rightarrow> 'b) \<Rightarrow> 'b" where 
 "pipe a f = (f a)"
 
 notation pipe (infixl "|>" 80)
 
+fun map_oe :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
+"map_oe _ (Error x) = Error x" |
+"map_oe f (Ok x) = Ok (f x)"
+
+(* notation map_oe (infixl "<$>" 80) *)
+
+fun and_then_oe :: "('a \<Rightarrow> 'b option_err) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
+"and_then_oe _ (Error x) = Error x" |
+"and_then_oe f (Ok a) = f a"
+
+(*notation and_then_oe (infixl "\<bind>" 80)*)
+
+fun and_map_oe :: "'a option_err \<Rightarrow> ('a  \<Rightarrow> 'b) option_err \<Rightarrow> 'b option_err" where 
+"and_map_oe (Error x) _ = Error x" |
+"and_map_oe _ (Error x) = Error x" |
+"and_map_oe (Ok a) (Ok f) = Ok (f a)"
+
+(* notation and_map_oe (infixl "<*>" 80) *)
+
+fun sequence_oe :: "'a option_err list \<Rightarrow> 'a list option_err" where 
+"sequence_oe [] = Ok []" |
+"sequence_oe (x # xs) = 
+  x
+  |> map_oe (op #) 
+  |> and_map_oe (sequence_oe xs)"
+
+
 datatype s_type 
   = ST_String 
   | ST_Int 
-  | ST_Date
-
-type_synonym s_column_name = string
 
 datatype s_value 
   = SV_String string 
   | SV_Int int 
   | SV_Null
+
+type_synonym s_column_name = string
+
+type_synonym s_tbl_name = string
 
 fun string_of_nat :: "nat \<Rightarrow> string"
 where
@@ -47,44 +78,18 @@ record s_schema_cell =
 
 type_synonym s_schema = "s_schema_cell list"
 
-type_synonym s_tbl_name = string
+record s_table_cell =
+  s_table_cell_column_name :: s_column_name
+  s_table_cell_value :: s_value
 
-datatype s_select_argument 
-  = SSA_Rowname s_column_name 
-  | SSA_Tablecolumn_name s_tbl_name s_column_name 
-  | SSA_Star
+record s_table = 
+  s_table_tbl_name :: s_tbl_name
+  s_table_schema :: s_schema 
+  s_table_vals :: "(s_table_cell list) list"
 
-datatype s_identifier
-  = SI_Simple s_column_name
-  | SI_With_Tbl_Name s_tbl_name s_column_name
+type_synonym s_table1 = "s_tbl_name \<times> s_schema \<times> (s_table_cell list) list"
 
-datatype s_comparison_operator
-  = SCO_Equal
-  | SCO_Less
-datatype s_function 
-  = SF_Max s_expr
-  | SF_Count s_expr
-  | SF_Sum s_expr
-and s_simple_expr 
-  = SSE_Literal s_value (* this is a simplification *)
-  | SSE_Identifier s_identifier
-  | SSE_Function s_function
-and s_bit_expr
-  = SBE_Add s_bit_expr s_bit_expr
-  | SBE_Mult s_bit_expr s_bit_expr
-  | SBE_Simple_Expr s_simple_expr
-and s_predicate 
-  = SP_Bit_Expr s_bit_expr
-and s_boolean_primary 
-  = SBP_Is_Null s_boolean_primary
-  | SBP_Comparison s_boolean_primary s_comparison_operator s_predicate
-  | SBP_Predicate s_predicate
-and s_expr
-  = SE_Or s_expr s_expr
-  | SE_And s_expr s_expr
-  | SE_Not s_expr 
-  | SE_Boolean_Primary s_boolean_primary
-
+type_synonym s_database = "s_table list"
 
 datatype 
   s_join_condition 
@@ -103,47 +108,6 @@ and
     = SFA_Table_Factor s_table_factor 
     | SFA_Join_Table s_join_table 
 
-datatype s_select_expr_all
-  = SSEA_Expr s_expr
-  | SSEA_Alias s_column_name s_expr 
-  | SSEA_Star
-
-datatype s_select_expr 
-  = SSE_Expr s_expr
-  | SSE_Alias s_column_name s_expr 
-
-datatype 'a option_err = Error string | Ok 'a 
-
-fun map_oe :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
-"map_oe _ (Error x) = Error x" |
-"map_oe f (Ok x) = Ok (f x)"
-
-(* notation map_oe (infixl "<$>" 80) *)
-
-fun and_map_oe :: "'a option_err \<Rightarrow> ('a  \<Rightarrow> 'b) option_err \<Rightarrow> 'b option_err" where 
-"and_map_oe (Error x) _ = Error x" |
-"and_map_oe _ (Error x) = Error x" |
-"and_map_oe (Ok a) (Ok f) = Ok (f a)"
-
-(* notation and_map_oe (infixl "<*>" 80) *)
-
-fun and_then_oe :: "('a \<Rightarrow> 'b option_err) \<Rightarrow> 'a option_err \<Rightarrow> 'b option_err" where 
-"and_then_oe _ (Error x) = Error x" |
-"and_then_oe f (Ok a) = f a"
-
-(*notation and_then_oe (infixl "\<bind>" 80)*)
-
-fun sequence_oe :: "'a option_err list \<Rightarrow> 'a list option_err" where 
-"sequence_oe [] = Ok []" |
-"sequence_oe (x # xs) = 
-  x
-  |> map_oe (op #) 
-  |> and_map_oe (sequence_oe xs)"
-
-record s_table_cell =
-  s_table_cell_column_name :: s_column_name
-  s_table_cell_value :: s_value
-
 record s_join_result_cell = s_table_cell + 
   s_join_result_cell_tbl_name :: "s_tbl_name list"
 
@@ -158,6 +122,37 @@ record s_join_result =
   s_join_result_schema :: "s_join_result_schema_cell list"
   s_join_result_vals :: s_join_result_vals
 
+datatype s_identifier
+  = SI_Simple s_column_name
+  | SI_With_Tbl_Name s_tbl_name s_column_name
+
+datatype s_comparison_operator
+  = SCO_Equal
+  | SCO_Less
+datatype s_function 
+  = SF_Max s_expr
+  | SF_Count s_expr
+  | SF_Sum s_expr
+and s_simple_expr 
+  = SSE_Literal s_value 
+  | SSE_Identifier s_identifier
+  | SSE_Function s_function
+and s_bit_expr
+  = SBE_Add s_bit_expr s_bit_expr
+  | SBE_Mult s_bit_expr s_bit_expr
+  | SBE_Simple_Expr s_simple_expr
+and s_predicate 
+  = SP_Bit_Expr s_bit_expr
+and s_boolean_primary 
+  = SBP_Is_Null s_boolean_primary
+  | SBP_Comparison s_boolean_primary s_comparison_operator s_predicate
+  | SBP_Predicate s_predicate
+and s_expr
+  = SE_Or s_expr s_expr
+  | SE_And s_expr s_expr
+  | SE_Not s_expr 
+  | SE_Boolean_Primary s_boolean_primary
+
 record s_group_row = 
   s_grouped_rows :: "s_join_row list" 
   s_grouping_values :: "(s_expr \<times> s_value) list"
@@ -166,6 +161,15 @@ record s_group_result =
   s_group_result :: "s_group_row list"
   s_group_result_schema :: "s_join_result_schema_cell list"
   s_group_result_grouped :: bool
+
+datatype s_select_expr_all
+  = SSEA_Expr s_expr
+  | SSEA_Alias s_column_name s_expr 
+  | SSEA_Star
+
+datatype s_select_expr 
+  = SSE_Expr s_expr
+  | SSE_Alias s_column_name s_expr 
 
 record s_select_cell = 
   s_select_cell_argument :: s_select_expr
@@ -178,11 +182,6 @@ record s_select_result =
   s_select_result :: "s_select_row list"
   s_select_result_grouped :: bool
 
-record s_table = 
-  s_table_tbl_name :: s_tbl_name
-  s_table_schema :: s_schema 
-  s_table_vals :: "(s_table_cell list) list"
-
 datatype s_compare 
   = GT
   | LT
@@ -192,7 +191,6 @@ datatype s_compare_type
   = SCT_Asc
   | SCT_Desc
 
-datatype s_database = SD "s_table list"
 
 fun lookup_column_name :: "s_column_name \<Rightarrow> ('a \<Rightarrow> s_column_name) \<Rightarrow> 'a list \<Rightarrow> 'a option" where 
 "lookup_column_name rn getter [] = None" |
@@ -264,7 +262,6 @@ fun inner_join_try :: "s_join_condition \<Rightarrow> s_join_row \<Rightarrow> s
     Ok None \<Rightarrow> Ok None |
     Ok (Some merged_cells) \<Rightarrow> Ok (Some (merged_cells @ remove_from_row rnl (l @ r)))
 )"
-
 
 fun inner_join_single_row :: "s_join_condition  \<Rightarrow> s_join_row \<Rightarrow> s_join_result_vals \<Rightarrow> s_join_result_vals option_err" where 
 "inner_join_single_row cond left_row [] = Ok []" |
@@ -389,8 +386,8 @@ fun natural_join :: "s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_j
   |> and_then_oe (\<lambda>same_column_names. inner_join (Some (SJC_Using same_column_names)) l r)
 " (* definition of natural join in https://dev.mysql.com/doc/refman/8.0/en/join.html *)
 
-fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
-"resolve_single_table tbl_nm (SD tables) = (
+fun evaluate_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
+"evaluate_single_table tbl_nm tables = (
   case lookup_tbl_name tbl_nm s_table_tbl_name tables of
     None \<Rightarrow> Error (''Unknown table '' @ tbl_nm @ '' in database '') |
     Some table \<Rightarrow> ( 
@@ -409,43 +406,43 @@ fun resolve_single_table :: "s_tbl_name \<Rightarrow> s_database \<Rightarrow> s
     )
 )"
 
-fun resolve_table_factor :: "s_table_factor \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" 
-and resolve_join_table :: "s_join_table \<Rightarrow> s_database \<Rightarrow> s_join_result option_err"
-and resolve_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
-"resolve_table_factor (STF_Single tbl_nm) db = resolve_single_table tbl_nm db" |
-"resolve_table_factor (STF_Multiple []) _ = Error (''No tables specified for JOIN'')" |
-"resolve_table_factor (STF_Multiple (x#xs)) db = (
-  case resolve_table_reference x db of 
+fun evaluate_table_factor :: "s_table_factor \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" 
+and evaluate_join_table :: "s_join_table \<Rightarrow> s_database \<Rightarrow> s_join_result option_err"
+and evaluate_table_reference :: "s_table_reference \<Rightarrow> s_database \<Rightarrow> s_join_result option_err" where
+"evaluate_table_factor (STF_Single tbl_nm) db = evaluate_single_table tbl_nm db" |
+"evaluate_table_factor (STF_Multiple []) _ = Error (''No tables specified for JOIN'')" |
+"evaluate_table_factor (STF_Multiple (x#xs)) db = (
+  case evaluate_table_reference x db of 
     Error x \<Rightarrow> Error x |
     Ok res \<Rightarrow> (
       case xs of 
         [] \<Rightarrow> Ok res |
         _ \<Rightarrow> (
-          case resolve_table_factor (STF_Multiple xs) db of 
+          case evaluate_table_factor (STF_Multiple xs) db of 
             Error x \<Rightarrow> Error x |
             Ok res2 \<Rightarrow> Ok (cross_join_tables res res2)
         )
     )
 )" |
 
-"resolve_join_table (SJT_Join tr tf conds) db = 
-  resolve_table_reference tr db
-  |> and_then_oe (\<lambda>jr1. resolve_table_factor tf db
+"evaluate_join_table (SJT_Join tr tf conds) db = 
+  evaluate_table_reference tr db
+  |> and_then_oe (\<lambda>jr1. evaluate_table_factor tf db
   |> and_then_oe (\<lambda>jr2. inner_join conds jr1 jr2
   ))" |
-"resolve_join_table (SJT_Left_Join tr1 tr2 cond) db = 
-  resolve_table_reference tr1 db
-  |> and_then_oe (\<lambda>jr1. resolve_table_reference tr2 db
+"evaluate_join_table (SJT_Left_Join tr1 tr2 cond) db = 
+  evaluate_table_reference tr1 db
+  |> and_then_oe (\<lambda>jr1. evaluate_table_reference tr2 db
   |> and_then_oe (\<lambda>jr2. left_join cond jr1 jr2
   ))" |
-"resolve_join_table (SJT_Nat_Join tr tf) db = 
-  resolve_table_reference tr db
-  |> and_then_oe (\<lambda>jr1. resolve_table_factor tf db
+"evaluate_join_table (SJT_Nat_Join tr tf) db = 
+  evaluate_table_reference tr db
+  |> and_then_oe (\<lambda>jr1. evaluate_table_factor tf db
   |> and_then_oe (\<lambda>jr2. natural_join jr1 jr2
   ))" |
 
-"resolve_table_reference (SFA_Table_Factor table_factor) db = resolve_table_factor table_factor db" |
-"resolve_table_reference (SFA_Join_Table join) db = resolve_join_table join db"
+"evaluate_table_reference (SFA_Table_Factor table_factor) db = evaluate_table_factor table_factor db" |
+"evaluate_table_reference (SFA_Join_Table join) db = evaluate_join_table join db"
 
 type_synonym 'row identifier_evaluator = "s_column_name \<Rightarrow> s_tbl_name option \<Rightarrow> 'row \<Rightarrow> s_value option_err" 
 (* row is polymorphic instead of cell because we need to have the whole row context to correctly 
@@ -453,18 +450,18 @@ handle errors.
 *)
 type_synonym 'row function_evaluator = "s_function \<Rightarrow> 'row \<Rightarrow> s_value option_err"
 
-fun interpret_identifier :: "s_identifier \<Rightarrow> 'row => 'row identifier_evaluator \<Rightarrow> s_value option_err" where
-"interpret_identifier (SI_Simple col) row ev = ev col None row" |
-"interpret_identifier (SI_With_Tbl_Name tbl_nm col) row ev = ev col (Some tbl_nm) row" 
+fun evaluate_identifier :: "s_identifier \<Rightarrow> 'row => 'row identifier_evaluator \<Rightarrow> s_value option_err" where
+"evaluate_identifier (SI_Simple col) row ev = ev col None row" |
+"evaluate_identifier (SI_With_Tbl_Name tbl_nm col) row ev = ev col (Some tbl_nm) row" 
 
-fun interpret_simple_expr :: "s_simple_expr \<Rightarrow> 'row => 'row identifier_evaluator \<Rightarrow> 'row function_evaluator  \<Rightarrow> s_value option_err" where 
-"interpret_simple_expr (SSE_Literal s_value) _ _ _ = Ok s_value" |
-"interpret_simple_expr (SSE_Identifier i) row iev fev = interpret_identifier i row iev" |
-"interpret_simple_expr (SSE_Function f) row iev fev = fev f row"
+fun evaluate_simple_expr :: "s_simple_expr \<Rightarrow> 'row => 'row identifier_evaluator \<Rightarrow> 'row function_evaluator  \<Rightarrow> s_value option_err" where 
+"evaluate_simple_expr (SSE_Literal s_value) _ _ _ = Ok s_value" |
+"evaluate_simple_expr (SSE_Identifier i) row iev fev = evaluate_identifier i row iev" |
+"evaluate_simple_expr (SSE_Function f) row iev fev = fev f row"
 
-fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where
-"interpret_bit_expr (SBE_Add e1 e2) row iev fev  = (
-  case (interpret_bit_expr e1 row iev fev, interpret_bit_expr e2 row iev fev) of
+fun evaluate_bit_expr :: "s_bit_expr \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where
+"evaluate_bit_expr (SBE_Add e1 e2) row iev fev  = (
+  case (evaluate_bit_expr e1 row iev fev, evaluate_bit_expr e2 row iev fev) of
     (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 + i2)) |
     (Ok SV_Null, _) \<Rightarrow> Ok SV_Null |
     (_, Ok SV_Null) \<Rightarrow> Ok SV_Null |
@@ -472,8 +469,8 @@ fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> 'row => 'row identifier_eval
     (_, Error x) \<Rightarrow> Error x |
     (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for addition: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
 )" |
-"interpret_bit_expr (SBE_Mult e1 e2) row iev fev = (
-  case (interpret_bit_expr e1 row iev fev, interpret_bit_expr e2 row iev fev) of
+"evaluate_bit_expr (SBE_Mult e1 e2) row iev fev = (
+  case (evaluate_bit_expr e1 row iev fev, evaluate_bit_expr e2 row iev fev) of
     (Ok (SV_Int i1), Ok (SV_Int i2)) \<Rightarrow> Ok (SV_Int (i1 * i2)) |
     (Ok SV_Null, _) \<Rightarrow> Ok SV_Null |
     (_, Ok SV_Null) \<Rightarrow> Ok SV_Null |
@@ -481,26 +478,26 @@ fun interpret_bit_expr :: "s_bit_expr \<Rightarrow> 'row => 'row identifier_eval
     (_, Error x) \<Rightarrow> Error x |
     (Ok x1, Ok x2) \<Rightarrow> Error (''Wrong arguments for multiplication: '' @ show_s_value x1 @ '' and '' @ show_s_value x2)
 )" | 
-"interpret_bit_expr (SBE_Simple_Expr e) row iev fev = interpret_simple_expr e row iev fev"
+"evaluate_bit_expr (SBE_Simple_Expr e) row iev fev = evaluate_simple_expr e row iev fev"
 
-fun interpret_predicate :: "s_predicate \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where 
-"interpret_predicate (SP_Bit_Expr e) row iev fev = interpret_bit_expr e row iev fev"
+fun evaluate_predicate :: "s_predicate \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where 
+"evaluate_predicate (SP_Bit_Expr e) row iev fev = evaluate_bit_expr e row iev fev"
 
 fun bool_to_s_value :: "bool \<Rightarrow> s_value" where 
 "bool_to_s_value True = SV_Int 1" | 
 "bool_to_s_value False = SV_Int 0" 
 
-fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where
-"interpret_boolean_primary (SBP_Is_Null bp) row iev fev = (
-  interpret_boolean_primary bp row iev fev 
+fun evaluate_boolean_primary :: "s_boolean_primary \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where
+"evaluate_boolean_primary (SBP_Is_Null bp) row iev fev = (
+  evaluate_boolean_primary bp row iev fev 
   |> and_then_oe (\<lambda>res. case res of 
     SV_Null \<Rightarrow> Ok (bool_to_s_value True) |
     _ \<Rightarrow> Ok (bool_to_s_value False)
   )
 )" |
-"interpret_boolean_primary (SBP_Comparison bp SCO_Equal pred) row iev fev = 
-  interpret_boolean_primary bp row iev fev 
-  |> and_then_oe (\<lambda>l. interpret_predicate pred row iev fev
+"evaluate_boolean_primary (SBP_Comparison bp SCO_Equal pred) row iev fev = 
+  evaluate_boolean_primary bp row iev fev 
+  |> and_then_oe (\<lambda>l. evaluate_predicate pred row iev fev
   |> and_then_oe (\<lambda>r. (
     case l of 
       SV_Null \<Rightarrow> Ok SV_Null | 
@@ -511,9 +508,9 @@ fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> 'row => 'row i
       )
   ))
 " |
-"interpret_boolean_primary (SBP_Comparison bp SCO_Less pred) row iev fev = 
-  interpret_boolean_primary bp row iev fev 
-  |> and_then_oe (\<lambda>l. interpret_predicate pred row iev fev
+"evaluate_boolean_primary (SBP_Comparison bp SCO_Less pred) row iev fev = 
+  evaluate_boolean_primary bp row iev fev 
+  |> and_then_oe (\<lambda>l. evaluate_predicate pred row iev fev
   |> and_then_oe (\<lambda>r. ( 
         case (l, r) of 
           (SV_Int il, SV_Int ir) \<Rightarrow> Ok (bool_to_s_value (il < ir)) |
@@ -523,7 +520,7 @@ fun interpret_boolean_primary :: "s_boolean_primary \<Rightarrow> 'row => 'row i
       )
   ))
 " |
-"interpret_boolean_primary (SBP_Predicate pred) row iev fev = interpret_predicate pred row iev fev"
+"evaluate_boolean_primary (SBP_Predicate pred) row iev fev = evaluate_predicate pred row iev fev"
 
 fun is_true :: "s_value \<Rightarrow> bool" where 
 "is_true v = s_value_eq v (SV_Int 1)"
@@ -533,50 +530,50 @@ fun boolean_operator :: "s_value \<Rightarrow> s_value \<Rightarrow> (bool \<Rig
 "boolean_operator _ SV_Null _ = SV_Null" | 
 "boolean_operator a b f = f (is_true a) (is_true b) |> bool_to_s_value" 
 
-fun interpret_expr :: "s_expr \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where 
-"interpret_expr (SE_Or e1 e2) row iev fev = 
-  interpret_expr e1 row iev fev 
-  |> and_then_oe (\<lambda>r1. interpret_expr e2 row iev fev
+fun evaluate_expr :: "s_expr \<Rightarrow> 'row => 'row identifier_evaluator => 'row function_evaluator \<Rightarrow> s_value option_err" where 
+"evaluate_expr (SE_Or e1 e2) row iev fev = 
+  evaluate_expr e1 row iev fev 
+  |> and_then_oe (\<lambda>r1. evaluate_expr e2 row iev fev
   |> and_then_oe (\<lambda>r2. boolean_operator r1 r2 (op \<or>) |> Ok))" |
-"interpret_expr (SE_And e1 e2) row iev fev = 
-  interpret_expr e1 row iev fev 
-  |> and_then_oe (\<lambda>r1. interpret_expr e2 row iev fev
+"evaluate_expr (SE_And e1 e2) row iev fev = 
+  evaluate_expr e1 row iev fev 
+  |> and_then_oe (\<lambda>r1. evaluate_expr e2 row iev fev
   |> and_then_oe (\<lambda>r2. boolean_operator r1 r2 (op \<and>) |> Ok))" |
-"interpret_expr (SE_Not e) row iev fev = 
-  interpret_expr e row iev fev 
+"evaluate_expr (SE_Not e) row iev fev = 
+  evaluate_expr e row iev fev 
   |> map_oe (\<lambda>r. (
     case r of 
       SV_Null \<Rightarrow> SV_Null |
       _ \<Rightarrow> (\<not> (is_true r)) |> bool_to_s_value
   ))" |
-"interpret_expr (SE_Boolean_Primary bp) row iev fev = 
-  interpret_boolean_primary bp row iev fev
+"evaluate_expr (SE_Boolean_Primary bp) row iev fev = 
+  evaluate_boolean_primary bp row iev fev
 "
 
-fun evaluate_identifier_join_row :: "s_join_row identifier_evaluator" where 
-"evaluate_identifier_join_row col None jr = (
+fun evaluate_identifier_in_where :: "s_join_row identifier_evaluator" where 
+"evaluate_identifier_in_where col None jr = (
   case find_in_row col jr s_table_cell_column_name of 
     [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in where clause'') |
     (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in where clause is ambiguous'') | 
     [cell] \<Rightarrow> Ok (s_table_cell_value cell) 
 )" |
-"evaluate_identifier_join_row col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in where clause'') " |
-"evaluate_identifier_join_row col (Some tbl_nm) (cell # rest) = (
+"evaluate_identifier_in_where col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in where clause'') " |
+"evaluate_identifier_in_where col (Some tbl_nm) (cell # rest) = (
   case (s_table_cell_column_name cell = col, lookup_tbl_name tbl_nm id (s_join_result_cell_tbl_name cell)) of 
     (True, Some _) \<Rightarrow> Ok (s_table_cell_value cell) |
-    _ \<Rightarrow> evaluate_identifier_join_row col (Some tbl_nm) rest
+    _ \<Rightarrow> evaluate_identifier_in_where col (Some tbl_nm) rest
 )"
 
-fun evaluate_function_join_row :: "s_join_row function_evaluator" where 
-"evaluate_function_join_row (SF_Max _) _ = Error ''Invalid use of group function''" |
-"evaluate_function_join_row (SF_Count _) _ = Error ''Invalid use of group function''" |
-"evaluate_function_join_row (SF_Sum _) _ = Error ''Invalid use of group function''" 
+fun evaluate_function_in_where :: "s_join_row function_evaluator" where 
+"evaluate_function_in_where (SF_Max _) _ = Error ''Invalid use of group function''" |
+"evaluate_function_in_where (SF_Count _) _ = Error ''Invalid use of group function''" |
+"evaluate_function_in_where (SF_Sum _) _ = Error ''Invalid use of group function''" 
 
-fun interpret_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow> (s_join_row list) option_err" where 
-"interpret_where_helper e [] = Ok []" |
-"interpret_where_helper e (jr # jrs) = 
-  interpret_expr e jr evaluate_identifier_join_row evaluate_function_join_row
-  |> and_then_oe (\<lambda>jr_res. interpret_where_helper e jrs
+fun evaluate_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow> (s_join_row list) option_err" where 
+"evaluate_where_helper e [] = Ok []" |
+"evaluate_where_helper e (jr # jrs) = 
+  evaluate_expr e jr evaluate_identifier_in_where evaluate_function_in_where
+  |> and_then_oe (\<lambda>jr_res. evaluate_where_helper e jrs
   |> and_then_oe (\<lambda>jrs_res.
     case is_true jr_res of
       True \<Rightarrow> Ok (jr # jrs_res) |
@@ -584,11 +581,11 @@ fun interpret_where_helper :: "s_expr \<Rightarrow> s_join_row list \<Rightarrow
   ))
 "
 
-fun interpret_where :: "s_expr \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
-"interpret_where e jres = 
+fun evaluate_where :: "s_expr \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
+"evaluate_where e jres = 
   jres
     |> s_join_result_vals
-    |> interpret_where_helper e
+    |> evaluate_where_helper e
     |> map_oe (\<lambda>vals. jres\<lparr> s_join_result_vals := vals \<rparr>)
 "
 
@@ -679,7 +676,7 @@ and evaluate_function_in_group_expr :: "s_join_row function_evaluator" where
         [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in group statement'') |
         (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in group statement is ambiguous'') | 
         [expr] \<Rightarrow> 
-            interpret_expr expr jr (evaluate_identifier_in_group_expr []) evaluate_function_in_group_expr        
+            evaluate_expr expr jr (evaluate_identifier_in_group_expr []) evaluate_function_in_group_expr        
     ) |
     (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in group statement is ambiguous'') | 
     [cell] \<Rightarrow> Ok (s_table_cell_value cell)
@@ -728,7 +725,7 @@ fun remove_from_join_row :: "s_column_name \<Rightarrow> s_tbl_name list \<Right
 )"
 
 fun evaluate_expr_in_group_expr :: "s_select_expr list \<Rightarrow> s_join_row \<Rightarrow> s_expr \<Rightarrow> s_value option_err" where 
-"evaluate_expr_in_group_expr se jr e = interpret_expr e jr (evaluate_identifier_in_group_expr se) evaluate_function_in_group_expr"
+"evaluate_expr_in_group_expr se jr e = evaluate_expr e jr (evaluate_identifier_in_group_expr se) evaluate_function_in_group_expr"
 
 fun can_group :: "s_select_expr list \<Rightarrow> s_expr list \<Rightarrow> s_join_row \<Rightarrow> s_join_row \<Rightarrow> bool option_err" where 
 "can_group se group_exprs jr1 jr2 = (
@@ -915,14 +912,14 @@ and evaluate_function_in_select_expr_inside_grouping_function :: "s_join_row fun
 "evaluate_function_in_select_expr (SF_Max e) gr = 
   gr 
     |> s_grouped_rows
-    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> map (\<lambda>jr. evaluate_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
     |> sequence_oe 
     |> and_then_oe evaluate_max
 " |
 "evaluate_function_in_select_expr (SF_Count e) gr = 
   gr 
     |> s_grouped_rows
-    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> map (\<lambda>jr. evaluate_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
     |> sequence_oe 
     |> and_then_oe evaluate_count
     |> map_oe SV_Int
@@ -930,7 +927,7 @@ and evaluate_function_in_select_expr_inside_grouping_function :: "s_join_row fun
 "evaluate_function_in_select_expr (SF_Sum e) gr = 
   gr 
     |> s_grouped_rows
-    |> map (\<lambda>jr. interpret_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
+    |> map (\<lambda>jr. evaluate_expr e jr evaluate_identifier_in_select_expr_helper evaluate_function_in_select_expr_inside_grouping_function)
     |> sequence_oe 
     |> and_then_oe evaluate_sum
 "
@@ -938,7 +935,7 @@ and evaluate_function_in_select_expr_inside_grouping_function :: "s_join_row fun
 fun evaluate_select_expr :: "s_select_expr \<Rightarrow> s_group_row \<Rightarrow> s_select_cell option_err" 
 and evaluate_select_expr_helper :: "s_expr \<Rightarrow> s_group_row \<Rightarrow> s_value option_err" where 
 "evaluate_select_expr_helper e gr = 
-  interpret_expr e gr evaluate_identifier_in_select_expr evaluate_function_in_select_expr
+  evaluate_expr e gr evaluate_identifier_in_select_expr evaluate_function_in_select_expr
 " |
 "evaluate_select_expr (SSE_Expr e) gr = 
   evaluate_select_expr_helper e gr
@@ -961,8 +958,8 @@ fun evaluate_select_single_row :: "s_select_expr list \<Rightarrow> s_group_row 
     ) 
 "
 
-fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where
-"evaluate_select se gres = 
+fun evaluate_field_list :: "s_select_expr_all list \<Rightarrow> s_group_result \<Rightarrow> s_select_result option_err" where
+"evaluate_field_list se gres = 
   gres 
     |> s_group_result
     |> map (evaluate_select_single_row (se |> map (convert_select_expr (s_group_result_schema gres)) |> concat)) 
@@ -1003,7 +1000,7 @@ and evaluate_function_in_having_inside_aggr_function :: "s_join_row function_eva
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
@@ -1015,7 +1012,7 @@ and evaluate_function_in_having_inside_aggr_function :: "s_join_row function_eva
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
@@ -1027,7 +1024,7 @@ and evaluate_function_in_having_inside_aggr_function :: "s_join_row function_eva
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_having_inside_aggr_function (s_select_row_values sr |> map s_select_cell_argument))
@@ -1044,7 +1041,7 @@ and evaluate_function_in_having_inside_aggr_function :: "s_join_row function_eva
       case find_in_select_exprs col id (\<lambda>e _. e) s_exprs of 
         [] \<Rightarrow> Error (''Unknown column '' @ col @ '' in having clause'') |
         (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in having clause is ambiguous'') |
-        [e] \<Rightarrow> interpret_expr e jr (evaluate_identifier_in_having_inside_aggr_function []) evaluate_function_in_having_inside_aggr_function
+        [e] \<Rightarrow> evaluate_expr e jr (evaluate_identifier_in_having_inside_aggr_function []) evaluate_function_in_having_inside_aggr_function
     )
 )" |
 "evaluate_identifier_in_having_inside_aggr_function s_exprs col (Some tbl_nm) [] = Error (''Unknown column '' @ tbl_nm @ ''.'' @ col @ '' in having cluase'')" |
@@ -1061,7 +1058,7 @@ fun evaluate_having :: "s_expr \<Rightarrow> s_select_result \<Rightarrow> s_sel
 "evaluate_having expr s_res = 
   s_res
     |> s_select_result
-    |> map (\<lambda>sr. interpret_expr expr sr evaluate_identifier_in_having evaluate_function_in_having 
+    |> map (\<lambda>sr. evaluate_expr expr sr evaluate_identifier_in_having evaluate_function_in_having 
       |> map_oe (\<lambda>res. (sr, res))
     )
     |> sequence_oe
@@ -1191,7 +1188,7 @@ and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row functi
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
@@ -1203,7 +1200,7 @@ and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row functi
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
@@ -1215,7 +1212,7 @@ and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row functi
   sr 
     |> s_grouped_rows
     |> map (\<lambda>jr. 
-      interpret_expr 
+      evaluate_expr 
         e 
         jr 
         (evaluate_identifier_in_order_by_inside_grouping_function (s_select_row_values sr |> map s_select_cell_argument)) 
@@ -1228,7 +1225,7 @@ and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row functi
 "evaluate_identifier_in_order_by_inside_grouping_function select_exprs col None jr = (
   case find_in_select_exprs col id (\<lambda>e _. e) select_exprs of 
     (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
-    [e] \<Rightarrow> interpret_expr e jr (evaluate_identifier_in_order_by_inside_grouping_function []) evaluate_function_in_order_by_inside_grouping_function |
+    [e] \<Rightarrow> evaluate_expr e jr (evaluate_identifier_in_order_by_inside_grouping_function []) evaluate_function_in_order_by_inside_grouping_function |
     [] \<Rightarrow> (
       case find_in_row col jr s_table_cell_column_name of 
         (x # y # zs) \<Rightarrow> Error (''Column '' @ col @ '' in order clause is ambiguous'') |
@@ -1248,7 +1245,7 @@ and evaluate_function_in_order_by_inside_grouping_function :: "s_join_row functi
 
 fun evaluate_expr_in_order_by :: "s_expr \<Rightarrow> s_select_row \<Rightarrow> s_value option_err" where 
 "evaluate_expr_in_order_by e sr = 
-  interpret_expr 
+  evaluate_expr 
     e 
     sr
     evaluate_identifier_in_order_by
@@ -1275,17 +1272,17 @@ fun evaluate_order_by :: "s_expr list \<Rightarrow> s_compare_type \<Rightarrow>
         |> map_oe (\<lambda>vs. s_res\<lparr>s_select_result := vs\<rparr>)
 )"
 
-fun select :: "s_select_expr_all list \<Rightarrow> s_table_reference \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_expr option \<Rightarrow> (s_expr list \<times> s_compare_type) option \<Rightarrow> s_database \<Rightarrow> s_select_result option_err" where
-"select field_list from where group_by having order_by db = 
+fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_table_reference \<Rightarrow> s_expr option \<Rightarrow> s_expr list \<Rightarrow> s_expr option \<Rightarrow> (s_expr list \<times> s_compare_type) option \<Rightarrow> s_database \<Rightarrow> s_select_result option_err" where
+"evaluate_select field_list from where group_by having order_by db = 
   db
-    |> resolve_table_reference from
+    |> evaluate_table_reference from
     |> and_then_oe (\<lambda>join_res. (
       case where of 
         None \<Rightarrow> Ok join_res |
-        Some e \<Rightarrow> interpret_where e join_res
+        Some e \<Rightarrow> evaluate_where e join_res
     ))
     |> and_then_oe (evaluate_group_by field_list having group_by)
-    |> and_then_oe (evaluate_select field_list)
+    |> and_then_oe (evaluate_field_list field_list)
     |> and_then_oe (\<lambda>select_res. (
       case having of 
         None \<Rightarrow> Ok select_res | 
