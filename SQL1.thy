@@ -87,8 +87,6 @@ record s_table =
   s_table_schema :: s_schema 
   s_table_vals :: "(s_table_cell list) list"
 
-type_synonym s_table1 = "s_tbl_name \<times> s_schema \<times> (s_table_cell list) list"
-
 type_synonym s_database = "s_table list"
 
 datatype 
@@ -346,11 +344,13 @@ fun left_join_helper :: "s_join_condition \<Rightarrow> s_join_result_vals \<Rig
 "left_join_helper _ [] _ = Ok [] " |
 "left_join_helper cond (l#ls) rs = (
   inner_join_single_row cond l (s_join_result_vals rs) 
-  |> map_oe (\<lambda>single_row_result. (
-    case single_row_result of 
-      (x#xs) \<Rightarrow> single_row_result |
-      [] \<Rightarrow> [l @ make_empty_row (s_join_result_schema rs)]
-  ))
+  |> and_then_oe (\<lambda>single_row_result. (
+    left_join_helper cond ls rs 
+    |> map_oe (\<lambda>rest. 
+      (case single_row_result of 
+        (x#xs) \<Rightarrow> single_row_result |
+        [] \<Rightarrow> [l @ make_empty_row (s_join_result_schema rs)]) @ rest
+  )))
 )"
 
 fun left_join :: "s_join_condition \<Rightarrow> s_join_result \<Rightarrow> s_join_result \<Rightarrow> s_join_result option_err" where
@@ -814,10 +814,14 @@ fun evaluate_group_by :: "s_select_expr_all list \<Rightarrow> s_expr option \<R
     select_args_converted = 
       select_args 
         |> map (convert_select_expr (s_join_result_schema j_res))  
-        |> concat
+        |> concat;
+    having_has_aggregation = 
+      (case having_arg of 
+        None \<Rightarrow> False |
+        Some x \<Rightarrow> has_aggregation x)
   in
-  case (filter has_aggregation_select_arg select_args_converted, group_args, map_option has_aggregation having_arg) of 
-    ([], [], Some False) \<Rightarrow> 
+  case (filter has_aggregation_select_arg select_args_converted, group_args, having_has_aggregation) of 
+    ([], [], False) \<Rightarrow> 
         Ok (convert_to_group_result j_res) |
     _ \<Rightarrow> 
       group_by_helper select_args_converted  group_args (s_join_result_vals j_res) [] 
@@ -1296,25 +1300,340 @@ fun evaluate_select :: "s_select_expr_all list \<Rightarrow> s_table_reference \
     ))
 "
 
-(* 
-how to add indexes/keys, 
+type_synonym readable_result = "s_value list list"
 
-how i end up with the order from examples
-what can be provable 
-how syntax is mapped, what I've got from the documentation, what I've inferred
-discuss missing features
-how functional programming helped in the reusability of code (w/ examples)
-theorems that I would prove
-discuss minimality aspect - how semantics and functions 
-EXTENDABILITY 
-FUNCTIONAL DEPENDENCIES theorems
+fun strip_result :: "s_select_result \<Rightarrow> readable_result" where 
+"strip_result s_res = 
+  s_res
+  |> s_select_result
+  |> map (\<lambda>row. row 
+    |> s_select_row_values 
+    |> map (\<lambda>cell. cell
+      |> s_select_cell_value))"
 
-cannot have count on *
-cannot have max on strings - as there is no comparison for strings implemented
-Error messages might be a little bit different - there is no syntax matching - for example "Can't group on 'MAX(name)'"
-where mysql errors and our implementation does not - functional dependencies
-where this implementation errors and mysql does not - comparison of strings
-difference in having - because of functional dependencies 
-*)
+fun test_cell :: "s_column_name \<Rightarrow> s_value \<Rightarrow> s_table_cell" where 
+"test_cell cl v = \<lparr> s_table_cell_column_name = cl, s_table_cell_value = v \<rparr>"
+
+fun test_schema_cell :: "s_column_name \<Rightarrow> s_type \<Rightarrow> s_schema_cell" where
+"test_schema_cell cl t = \<lparr> s_schema_column_name = cl, s_schema_column_type = t \<rparr>"
+
+fun test_row :: "int \<Rightarrow> string \<Rightarrow> string option \<Rightarrow> s_table_cell list" where 
+"test_row i s None = [test_cell ''id'' (SV_Int i), test_cell ''name'' (SV_String s), test_cell ''nullable'' SV_Null]" |
+"test_row i s (Some s2) = [test_cell ''id'' (SV_Int i), test_cell ''name'' (SV_String s), test_cell ''nullable'' (SV_String s2)]" 
+
+fun test_table :: "s_tbl_name \<Rightarrow> s_table_cell list list \<Rightarrow> s_table" where 
+"test_table tn tv = 
+  \<lparr> s_table_tbl_name = tn
+  , s_table_schema = 
+    [test_schema_cell ''id'' ST_Int, test_schema_cell ''name'' (ST_String), test_schema_cell ''nullable'' ST_String]
+  , s_table_vals = tv 
+  \<rparr>" 
+
+fun test_table1 :: "unit \<Rightarrow> s_table" where 
+"test_table1 _ = test_table ''t1'' [test_row 1 ''a'' None, test_row 2 ''a'' (Some ''a'')]"
+
+fun test_table2 :: "unit \<Rightarrow> s_table" where 
+"test_table2 _ = test_table ''t2'' [test_row 1 ''c'' (Some ''a''), test_row 3 ''d'' None]" 
+
+fun test_database :: "unit \<Rightarrow> s_database" where 
+"test_database _ = 
+  [ test_table1 ()
+  , test_table2 ()
+  ]
+"
+
+fun tbl_nm :: "s_tbl_name \<Rightarrow> s_table_reference" where 
+"tbl_nm tn = SFA_Table_Factor (STF_Single tn)" 
+
+(* SELECT * FROM t1 \<rightarrow> [(1, a, NULL), (2, a, a)] *)
+fun test_query_simple :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_simple _ = 
+  evaluate_select
+    [SSEA_Star]
+    (tbl_nm ''t1'')
+    None 
+    []
+    None
+    None
+    (test_database ())
+  |> map_oe strip_result
+"
+
+value "test_query_simple () = 
+  Ok [[SV_Int 1, SV_String ''a'', SV_Null], [SV_Int 2, SV_String ''a'', SV_String ''a'']]"
+
+fun join :: "s_tbl_name \<Rightarrow> s_tbl_name \<Rightarrow> s_column_name \<Rightarrow> s_table_reference" where 
+"join t1 t2 cn = 
+  SFA_Join_Table (SJT_Join (tbl_nm t1) (STF_Single t2) (Some (SJC_Using [cn])))"
+
+(* SELECT id, t1.name, t2.nullable FROM t1 JOIN t2 USING (id) \<rightarrow> [(1, a, a)] *)
+fun test_query_from_clause_1 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_from_clause_1 _ = 
+  evaluate_select
+    [SSEA_Expr (identifier_expr ''id'' None), SSEA_Expr (identifier_expr ''name'' (Some ''t1'')), SSEA_Expr (identifier_expr ''nullable'' (Some ''t2''))]
+    (join ''t1'' ''t2'' ''id'')
+    None 
+    []
+    None
+    None
+    (test_database ())
+  |> map_oe strip_result"
+
+value "test_query_from_clause_1 () = 
+  Ok [[SV_Int 1, SV_String ''a'', SV_String ''a'']]"
+
+fun nat_join :: "s_tbl_name \<Rightarrow> s_tbl_name \<Rightarrow> s_table_reference" where 
+"nat_join t1 t2 = 
+  SFA_Join_Table (SJT_Nat_Join (tbl_nm t1) (STF_Single t2))"
+
+(* SELECT * FROM t1 NATURAL JOIN t2 \<rightarrow> [] *)
+fun test_query_from_clause_2 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_from_clause_2 () = 
+    evaluate_select
+    [SSEA_Star]
+    (nat_join ''t1'' ''t2'')
+    None
+    []
+    None
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_from_clause_2 () = 
+  Ok []"
+
+
+fun l_join :: "s_tbl_name \<Rightarrow> s_tbl_name \<Rightarrow> s_column_name  \<Rightarrow> s_table_reference" where 
+"l_join t1 t2 cn = 
+  SFA_Join_Table (SJT_Left_Join (tbl_nm t1) (tbl_nm t2) (SJC_Using [cn]))"
+
+(* SELECT * FROM t1 LEFT JOIN t2 USING (id) \<rightarrow> [(1, a, NULL, 1, c, a), (2, a, a, NULL, NULL, NULL)] *)
+fun test_query_from_clause_3 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_from_clause_3 () = 
+    evaluate_select
+    [SSEA_Star]
+    (l_join ''t1'' ''t2'' ''id'')
+    None
+    []
+    None
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_from_clause_3 () = 
+  Ok [[SV_Int 1, SV_String ''a'', SV_Null, SV_Int 1, SV_String ''c'', SV_String ''a''], [SV_Int 2, SV_String ''a'', SV_String ''a'', SV_Null, SV_Null, SV_Null]]"
+
+fun sum_expr :: "s_tbl_name option \<Rightarrow> s_column_name \<Rightarrow> s_expr" where 
+"sum_expr tn cn = 
+  (identifier_expr cn tn) 
+    |> SF_Sum 
+    |> SSE_Function
+    |> SBE_Simple_Expr
+    |> SP_Bit_Expr 
+    |> SBP_Predicate
+    |> SE_Boolean_Primary"
+
+(* SELECT * FROM t1 WHERE nullable IS NULL \<rightarrow> [(1, a, NULL)] *)
+fun test_query_where_clause_1 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_where_clause_1 _ = 
+  evaluate_select
+    [SSEA_Star]
+    (tbl_nm ''t1'')
+    (Some (SE_Boolean_Primary (SBP_Is_Null (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier (SI_Simple ''nullable'')))))))) 
+    []
+    None
+    (Some ([identifier_expr ''id'' None], SCT_Desc))
+    (test_database ())
+  |> map_oe strip_result
+"
+
+value "test_query_where_clause_1 () = 
+  Ok [[SV_Int 1, SV_String ''a'', SV_Null]]"
+
+(* SELECT nullable as col FROM t1 WHERE col IS NULL \<rightarrow> Error: Unknown column 'col' in 'where clause' *)
+fun test_query_where_clause_2 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_where_clause_2 _ = 
+  evaluate_select
+    [SSEA_Alias ''col'' (identifier_expr ''nullable'' None)]
+    (tbl_nm ''t1'')
+    (Some (SE_Boolean_Primary (SBP_Is_Null (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier (SI_Simple ''col'')))))))) 
+    []
+    None
+    (Some ([identifier_expr ''id'' None], SCT_Desc))
+    (test_database ())
+  |> map_oe strip_result
+"
+value "test_query_where_clause_2 () = 
+  Error ''Unknown column col in where clause''"
+
+(* SELECT SUM(id) FROM t1 GROUP BY name \<rightarrow> [(3)] *)
+fun test_query_group_clause_1 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_group_clause_1 _ = 
+  evaluate_select
+    [SSEA_Expr (sum_expr (Some ''t1'') ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''name'' (Some ''t1'')]
+    None
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_group_clause_1 () =
+  Ok [[SV_Int 3]]"
+
+(* SELECT SUM(id), name as col FROM t1 GROUP BY col \<rightarrow> [(3, a)] *)
+fun test_query_group_clause_2 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_group_clause_2 _ = 
+  evaluate_select
+    [SSEA_Expr (sum_expr (Some ''t1'') ''id''), SSEA_Alias ''col'' (identifier_expr ''name'' None)]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''col'' None]
+    None
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_group_clause_2 () =
+  Ok [[SV_Int 3, SV_String ''a'']]"
+
+(* SELECT SUM(id) as col FROM t1 GROUP BY col \<rightarrow> Error: Can't group on 'col' *)
+fun test_query_group_clause_3 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_group_clause_3 _ = 
+  evaluate_select
+    [SSEA_Alias ''col'' (sum_expr (Some ''t1'') ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''col'' None]
+    None
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_group_clause_3 () = 
+  Error ''Invalid use of group function''"
+
+(* SELECT SUM(id) FROM t1 GROUP BY name HAVING SUM(id) < 2 \<rightarrow> []*)
+fun test_query_having_clause_1 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_having_clause_1 _ = 
+    evaluate_select
+    [SSEA_Expr (sum_expr None ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''name'' None]
+    (Some (SE_Boolean_Primary (SBP_Comparison (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Function (SF_Sum (identifier_expr ''id'' None)))))) SCO_Less (SP_Bit_Expr (SBE_Simple_Expr (SSE_Literal (SV_Int 2)))))))
+    None
+    (test_database ())
+    
+  |> map_oe strip_result
+"
+value "test_query_having_clause_1 () = 
+  Ok []"
+
+(* SELECT SUM(id) as col FROM t1 GROUP BY name HAVING col < 2 \<rightarrow> []*)
+fun test_query_having_clause_2 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_having_clause_2 _ = 
+    evaluate_select
+    [SSEA_Alias ''col'' (sum_expr None ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''name'' None]
+    (Some (SE_Boolean_Primary (SBP_Comparison (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier (SI_Simple ''col'' ))))) SCO_Less (SP_Bit_Expr (SBE_Simple_Expr (SSE_Literal (SV_Int 2)))))))
+    None
+    (test_database ())
+
+  |> map_oe strip_result
+"
+value "test_query_having_clause_2 () = 
+  Ok []"
+
+(* SELECT SUM(id) FROM t1 GROUP BY name HAVING NOT name = "a" \<rightarrow> []*)
+fun test_query_having_clause_3 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_having_clause_3 _ = 
+    evaluate_select
+    [SSEA_Expr (sum_expr None ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''name'' None]
+    (Some (SE_Not (SE_Boolean_Primary (SBP_Comparison (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier (SI_Simple ''name'' ))))) SCO_Equal (SP_Bit_Expr (SBE_Simple_Expr (SSE_Literal (SV_String ''a''))))))))
+    None
+    (test_database ())
+
+  |> map_oe strip_result
+"
+value "test_query_having_clause_3 ()
+  = Ok []"
+
+(* SELECT SUM(id) FROM t1 GROUP BY name HAVING id = 1 \<rightarrow> Error: Unknown column 'id' in 'having clause' *)
+fun test_query_having_clause_4 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_having_clause_4 _ = 
+    evaluate_select
+    [SSEA_Alias ''col'' (sum_expr None ''id'')]
+    (tbl_nm ''t1'')
+    None
+    [identifier_expr ''name'' None]
+    (Some (SE_Boolean_Primary (SBP_Comparison (SBP_Predicate (SP_Bit_Expr (SBE_Simple_Expr (SSE_Identifier (SI_Simple ''id'' ))))) SCO_Equal (SP_Bit_Expr (SBE_Simple_Expr (SSE_Literal (SV_Int 1)))))))
+    None
+    (test_database ())
+
+  |> map_oe strip_result
+"
+value "test_query_having_clause_4 () =
+  Error ''Unknown column id in having clause''"
+
+(* SELECT * FROM t2 ORDER BY id DESC \<rightarrow> [(3, d, NULL), (1, c, a)]*)
+fun test_query_order_clause_1 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_order_clause_1 _ = 
+  evaluate_select
+    [SSEA_Star]
+    (tbl_nm ''t2'')
+    None 
+    []
+    None
+    (Some ([identifier_expr ''id'' None], SCT_Desc))
+    (test_database ())
+  |> map_oe strip_result
+"
+value "test_query_order_clause_1 ()
+  = Ok [[SV_Int 3, SV_String ''d'', SV_Null], [SV_Int 1, SV_String ''c'',  SV_String ''a'']]"
+
+(* SELECT * FROM t2 ORDER BY SUM(id) DESC \<rightarrow> Error: Expression #1 of ORDER BY contains aggregate function and applies to the result of a non-aggregated query *)
+fun test_query_order_clause_2 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_order_clause_2 _ = 
+  evaluate_select
+    [SSEA_Star]
+    (tbl_nm ''t2'')
+    None 
+    []
+    None
+    (Some ([sum_expr None ''id''], SCT_Desc))
+    (test_database ())
+  |> map_oe strip_result
+"
+
+value "test_query_order_clause_2 () =
+  Error ''Expressions in ORDER BY contain aggregate function and apply to the result of a non-aggregated query''"
+
+(* SELECT id as col, name, nullable as id FROM t2 ORDER BY id DESC \<rightarrow> [(1, c, a), (3, d, NULL)]*)
+fun test_query_order_clause_3 :: "unit \<Rightarrow> readable_result option_err" where 
+"test_query_order_clause_3 _ = 
+  evaluate_select
+    [SSEA_Alias ''col'' (identifier_expr ''id'' None), SSEA_Expr (identifier_expr ''name'' None), SSEA_Alias ''id'' (identifier_expr ''nullable'' None)]
+    (tbl_nm ''t2'')
+    None 
+    []
+    None
+    (Some ([identifier_expr ''id'' None], SCT_Desc))
+    (test_database ())
+  |> map_oe strip_result
+"
+value "test_query_order_clause_3 () = 
+  Ok [[SV_Int 1, SV_String ''c'', SV_String ''a''], [SV_Int 3, SV_String ''d'', SV_Null]]"
 
 end 
